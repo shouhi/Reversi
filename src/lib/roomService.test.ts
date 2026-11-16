@@ -278,9 +278,19 @@ describe("getStore — store selection", () => {
   it("throws when unconfigured and not opted in", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
+    vi.stubEnv("KV_REST_API_URL", "");
+    vi.stubEnv("KV_REST_API_TOKEN", "");
     vi.stubEnv("REVERSI_MEMORY_STORE", "");
     vi.stubEnv("NODE_ENV", "production");
     expect(() => getStore()).toThrow(StoreNotConfiguredError);
+  });
+
+  it("accepts the Vercel Upstash KV_* env var names", () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
+    vi.stubEnv("KV_REST_API_URL", "https://example.upstash.io");
+    vi.stubEnv("KV_REST_API_TOKEN", "example-token");
+    expect(getStore().kind).toBe("redis");
   });
 
   it("prefers Redis when credentials are present", () => {
@@ -292,6 +302,8 @@ describe("getStore — store selection", () => {
   it("uses memory only when explicitly opted in", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
+    vi.stubEnv("KV_REST_API_URL", "");
+    vi.stubEnv("KV_REST_API_TOKEN", "");
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("REVERSI_MEMORY_STORE", "1");
     expect(getStore().kind).toBe("memory");

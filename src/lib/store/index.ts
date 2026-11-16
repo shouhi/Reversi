@@ -9,8 +9,9 @@ export class StoreNotConfiguredError extends Error {
   constructor() {
     super(
       "Storage is not configured. Set UPSTASH_REDIS_REST_URL and " +
-        "UPSTASH_REDIS_REST_TOKEN (see .env.example), or set REVERSI_MEMORY_STORE=1 " +
-        "for local/test use only.",
+        "UPSTASH_REDIS_REST_TOKEN (or the Vercel Upstash integration's " +
+        "KV_REST_API_URL and KV_REST_API_TOKEN — see .env.example), or set " +
+        "REVERSI_MEMORY_STORE=1 for local/test use only.",
     );
     this.name = "StoreNotConfiguredError";
   }
@@ -29,8 +30,13 @@ let cached: RoomStore | null = null;
 export function getStore(): RoomStore {
   if (cached) return cached;
 
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // Accept both naming conventions:
+  //   - UPSTASH_REDIS_REST_URL / _TOKEN  (Upstash-native / manual setup)
+  //   - KV_REST_API_URL / _TOKEN         (Vercel Marketplace "Upstash for Redis")
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (url && token) {
     cached = createRedisStore(url, token);
     return cached;
