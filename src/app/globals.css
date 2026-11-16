@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/* --------------------------------------------------------------------------
+   Design tokens — a restrained, dark "premium board game" palette.
+   -------------------------------------------------------------------------- */
+@theme {
+  --color-bg: #0e1013;
+  --color-surface: #16191e;
+  --color-raised: #1f242c;
+  --color-line: #2a3039;
+  --color-ink: #e9ebf0;
+  --color-muted: #98a1ad;
+  --color-accent: #34d399;
+  --color-felt: #1d7a4d;
+  --color-felt-dark: #14603c;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* A very subtle vignette so flat dark doesn't feel lifeless. */
+  background-image: radial-gradient(
+    120% 90% at 50% 0%,
+    rgba(52, 211, 153, 0.05),
+    transparent 60%
+  );
+  background-attachment: fixed;
+}
+
+/* --------------------------------------------------------------------------
+   The board
+   -------------------------------------------------------------------------- */
+.reversi-board {
+  background: linear-gradient(160deg, var(--color-felt), var(--color-felt-dark));
+  border-radius: 14px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 18px 40px -18px rgba(0, 0, 0, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.reversi-cell {
+  position: relative;
+  border-right: 1px solid rgba(0, 0, 0, 0.28);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.28);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-left: 1px solid rgba(255, 255, 255, 0.04);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* --------------------------------------------------------------------------
+   Stones — subtle 3D via layered radial gradients, restrained shadow.
+   -------------------------------------------------------------------------- */
+.stone {
+  width: 82%;
+  height: 82%;
+  border-radius: 9999px;
+  animation: stone-place 220ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.stone-black {
+  background:
+    radial-gradient(
+      circle at 32% 28%,
+      #5a5f6a 0%,
+      #2b2f36 38%,
+      #0c0d10 100%
+    );
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.55),
+    inset 0 1px 1px rgba(255, 255, 255, 0.14);
+}
+
+.stone-white {
+  background:
+    radial-gradient(
+      circle at 32% 28%,
+      #ffffff 0%,
+      #e9ecf1 40%,
+      #b7bdc8 100%
+    );
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.5),
+    inset 0 1px 1px rgba(255, 255, 255, 0.7);
+}
+
+@keyframes stone-place {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Legal-move hint dot (only shown on the current player's own turn). */
+.move-hint {
+  width: 26%;
+  height: 26%;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: transform 140ms ease, background-color 140ms ease;
+}
+.reversi-cell:hover .move-hint {
+  transform: scale(1.25);
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Ring marking the most recent move. */
+.last-move-ring {
+  position: absolute;
+  inset: 8%;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 2px var(--color-accent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stone {
+    animation: none;
+  }
+}
