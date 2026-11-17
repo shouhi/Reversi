@@ -6,6 +6,7 @@ import { chessGame } from "./chess";
 import { shogiGame } from "./shogi";
 import { memoryGame } from "./memory";
 import { minecartGame } from "./minecart";
+import { colorHideGame } from "./color-hide";
 
 /**
  * The single source of truth for the game catalog.
@@ -25,6 +26,7 @@ const GAMES: GameMeta[] = [
   shogiGame,
   memoryGame,
   minecartGame,
+  colorHideGame,
 ];
 
 const byOrder = (a: GameMeta, b: GameMeta) => a.displayOrder - b.displayOrder;

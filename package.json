@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:color-hide-rt": "tsx src/games/color-hide/server/localServer.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -14,10 +15,13 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
     "@upstash/redis": "^1.34.3",
     "next": "^15.5.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -26,10 +30,13 @@
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.6",
     "@types/react-dom": "^19.0.3",
+    "@types/ws": "^8.18.2",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.5.4",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "ws": "^8.23.0"
   }
 }
