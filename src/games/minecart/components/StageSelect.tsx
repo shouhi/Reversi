@@ -5,7 +5,8 @@ import type { Difficulty, MinecartProgress, Stage } from "../types";
 const DIFF: { key: Difficulty; label: string; color: string }[] = [
   { key: "easy", label: "EASY", color: "#34d399" },
   { key: "normal", label: "NORMAL", color: "#60a5fa" },
-  { key: "hard", label: "HARD", color: "#f87171" },
+  { key: "hard", label: "HARD", color: "#fb923c" },
+  { key: "expert", label: "EXPERT", color: "#f472b6" },
 ];
 
 function fmt(ms: number | undefined): string {

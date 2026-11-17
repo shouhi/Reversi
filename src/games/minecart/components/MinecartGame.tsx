@@ -9,6 +9,7 @@ import {
   defaultProgress,
   loadProgress,
   recordClear,
+  recordReach,
   setSound,
 } from "../lib/storage";
 import type { MinecartProgress } from "../types";
@@ -38,6 +39,10 @@ export default function MinecartGame() {
 
   const handleClear = (timeMs: number) => {
     setProgress((p) => recordClear(p, stage.id, timeMs));
+  };
+
+  const handleReach = (reach: number) => {
+    setProgress((p) => recordReach(p, stage.id, reach));
   };
 
   const handleNext = () => {
@@ -82,8 +87,10 @@ export default function MinecartGame() {
               stageIndex={index}
               totalStages={STAGES.length}
               soundOn={progress.sound}
+              bestReach={progress.bestReach[stage.id] ?? 0}
               onToggleSound={handleToggleSound}
               onClear={handleClear}
+              onReach={handleReach}
               onExit={() => setScreen("select")}
               onNext={handleNext}
               hasNext={index + 1 < STAGES.length}

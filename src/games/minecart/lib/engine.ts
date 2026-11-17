@@ -1,13 +1,22 @@
 /**
- * Pure, deterministic Minecart simulation. No canvas, DOM, or React — so it can
- * be unit tested and used headlessly by the stage-clearability solver.
+ * Pure, deterministic Minecart simulation. No canvas/DOM/React — unit tested and
+ * used headlessly by the clearability solver. Drive it with a fixed timestep
+ * (FIXED_DT): a small step keeps physics frame-rate independent and tunnel-free.
  *
- * The caller drives time with a fixed timestep (see FIXED_DT): accumulate real
- * frame time and call `stepFixed` once per fixed slice. Determinism + a small
- * timestep guarantee frame-rate-independent physics and no high-speed tunneling.
+ * Supports flat platforms at varying heights (elevation via gaps), ground
+ * hazards (jump over), overhead hazards / beams (stay low — jumping into them is
+ * fatal), and deterministic periodic moving obstacles (position is a pure
+ * function of elapsed time, so runs are fully reproducible).
  */
 
-import type { Obstacle, Stage, StepEvents, World } from "../types";
+import type {
+  DeathCause,
+  Obstacle,
+  ObstacleKind,
+  Stage,
+  StepEvents,
+  World,
+} from "../types";
 import {
   BASE_GROUND_Y,
   CART_H,
@@ -32,29 +41,54 @@ export function groundTopAt(stage: Stage, x: number): number | null {
   return top;
 }
 
-function aabbOverlap(
+/** The obstacle's current AABB at time `elapsed`, applying any periodic motion. */
+export function obstacleRect(
+  o: Obstacle,
+  elapsed: number,
+): { x: number; y: number; w: number; h: number } {
+  let x = o.x;
+  let y = o.y;
+  if (o.move) {
+    const d =
+      o.move.amplitude *
+      Math.sin((2 * Math.PI * elapsed) / o.move.period + (o.move.phase ?? 0));
+    if (o.move.axis === "x") x += d;
+    else y += d;
+  }
+  return { x, y, w: o.width, h: o.height };
+}
+
+function overlaps(
   ax: number,
   ay: number,
   aw: number,
   ah: number,
-  b: Obstacle,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
 ): boolean {
-  return (
-    ax < b.x + b.width &&
-    ax + aw > b.x &&
-    ay < b.y + b.height &&
-    ay + ah > b.y
-  );
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
-function hitsObstacle(stage: Stage, w: World): boolean {
+const CAUSE_BY_KIND: Record<ObstacleKind, DeathCause> = {
+  rock: "crash",
+  crate: "crash",
+  spike: "crash",
+  bat: "overhead",
+  beam: "overhead",
+};
+
+function obstacleHitCause(stage: Stage, w: World): DeathCause | null {
   for (const o of stage.obstacles) {
-    if (aabbOverlap(w.cartX, w.cartY, w.cartW, w.cartH, o)) return true;
+    const r = obstacleRect(o, w.elapsed);
+    if (overlaps(w.cartX, w.cartY, w.cartW, w.cartH, r.x, r.y, r.w, r.h)) {
+      return CAUSE_BY_KIND[o.kind];
+    }
   }
-  return false;
+  return null;
 }
 
-/** Fresh simulation state for a stage, in the "ready" (pre-start) status. */
 export function createWorld(stage: Stage): World {
   const groundTop = groundTopAt(stage, stage.startX + CART_W / 2) ?? BASE_GROUND_Y;
   return {
@@ -70,7 +104,13 @@ export function createWorld(stage: Stage): World {
     coyote: COYOTE_TIME,
     jumpBuffer: 0,
     wheelAngle: 0,
+    deathCause: null,
   };
+}
+
+/** Cheap structural clone (all primitive fields) — used by the solver. */
+export function cloneWorld(w: World): World {
+  return { ...w };
 }
 
 function doJump(w: World): void {
@@ -88,8 +128,7 @@ const noEvents = (): StepEvents => ({
 
 /**
  * Advance the world by one fixed timestep. `jumpPressed` is the jump edge for
- * THIS step (the driver passes true on at most one fixed step per real press).
- * Mutates `world` and returns the discrete events that occurred.
+ * THIS step. Mutates `world`; returns the discrete events that occurred.
  */
 export function stepFixed(
   world: World,
@@ -100,7 +139,6 @@ export function stepFixed(
   const events = noEvents();
   if (world.status !== "running") return events;
 
-  // --- jump input (coyote + buffer for fairness) ---
   if (jumpPressed) {
     if (world.onGround || world.coyote > 0) {
       doJump(world);
@@ -110,27 +148,33 @@ export function stepFixed(
     }
   }
 
-  // --- horizontal advance ---
+  // horizontal advance (constant; independent of jumps)
   world.cartX += stage.speed * dt;
   world.elapsed += dt;
   world.wheelAngle += (stage.speed * dt) / WHEEL_RADIUS;
 
-  // --- vertical integration (frame-rate independent) ---
+  // vertical integration
+  const feetPrev = world.cartY + world.cartH;
   world.vy += GRAVITY * dt;
   world.cartY += world.vy * dt;
 
-  // --- ground resolution ---
+  // ground resolution — only land when crossing a surface from above (prevents
+  // teleporting up into the side of a higher platform).
   const centerX = world.cartX + world.cartW / 2;
   const groundTop = groundTopAt(stage, centerX);
   const feet = world.cartY + world.cartH;
-  if (groundTop !== null && world.vy >= 0 && feet >= groundTop) {
+  if (
+    groundTop !== null &&
+    world.vy >= 0 &&
+    feet >= groundTop &&
+    feetPrev <= groundTop + 1
+  ) {
     const wasAirborne = !world.onGround;
     world.cartY = groundTop - world.cartH;
     world.vy = 0;
     world.onGround = true;
     world.coyote = COYOTE_TIME;
     if (wasAirborne) events.landed = true;
-    // honour a buffered jump the instant we touch down
     if (world.jumpBuffer > 0) {
       doJump(world);
       world.jumpBuffer = 0;
@@ -142,21 +186,24 @@ export function stepFixed(
     world.jumpBuffer = Math.max(0, world.jumpBuffer - dt);
   }
 
-  // --- death: fell into a pit ---
+  // death: fell into a pit
   if (world.cartY + world.cartH > stage.baseGroundY + FALL_KILL_BELOW) {
     world.status = "dead";
+    world.deathCause = "fall";
     events.died = true;
     return events;
   }
 
-  // --- death: hit a hazard ---
-  if (hitsObstacle(stage, world)) {
+  // death: hit a hazard (uses each obstacle's current moved position)
+  const cause = obstacleHitCause(stage, world);
+  if (cause) {
     world.status = "dead";
+    world.deathCause = cause;
     events.died = true;
     return events;
   }
 
-  // --- clear ---
+  // clear
   if (centerX >= stage.goalX) {
     world.status = "cleared";
     events.cleared = true;
