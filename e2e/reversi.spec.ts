@@ -120,19 +120,16 @@ test("an unknown room shows a friendly error", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("the catalog lists games and only links playable ones", async ({
-  page,
-}) => {
+test("the catalog lists the games as playable links", async ({ page }) => {
   await page.goto("/");
 
-  // Reversi is listed as a live link to its detail page.
+  // Every available game is listed as a live link to its detail page.
   const reversiLink = page.getByRole("link", { name: "リバーシ を遊ぶ" });
   await expect(reversiLink).toBeVisible();
-
-  // A coming-soon game is listed, shows 準備中, and is NOT a clickable link.
-  await expect(page.getByRole("heading", { name: "四目並べ" })).toBeVisible();
-  await expect(page.getByText("準備中").first()).toBeVisible();
-  await expect(page.getByRole("link", { name: /四目並べ/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "○×ゲーム を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "四目並べ を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "チェス を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "神経衰弱 を遊ぶ" })).toBeVisible();
 
   // Selecting Reversi navigates to its start page.
   await reversiLink.click();

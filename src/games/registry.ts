@@ -1,6 +1,9 @@
 import type { GameMeta } from "./types";
 import { reversiGame } from "./reversi";
 import { ticTacToeGame } from "./tic-tac-toe";
+import { connectFourGame } from "./connect-four";
+import { chessGame } from "./chess";
+import { memoryGame } from "./memory";
 
 /**
  * The single source of truth for the game catalog.
@@ -15,47 +18,9 @@ import { ticTacToeGame } from "./tic-tac-toe";
 const GAMES: GameMeta[] = [
   reversiGame,
   ticTacToeGame,
-
-  // --- Coming soon (listed, not yet playable; no route) --------------------
-  {
-    id: "connect-four",
-    slug: "connect-four",
-    title: "四目並べ",
-    description: "コマを落として縦・横・斜めに4つ並べることを狙う対戦ゲーム。",
-    category: "ボードゲーム",
-    minPlayers: 2,
-    maxPlayers: 2,
-    supportedModes: ["online-2p"],
-    status: "coming-soon",
-    displayOrder: 30,
-    accent: "#fbbf24",
-  },
-  {
-    id: "chess",
-    slug: "chess",
-    title: "チェス",
-    description: "世界で親しまれる戦略ボードゲーム。友達と腕を競おう。",
-    category: "ボードゲーム",
-    minPlayers: 2,
-    maxPlayers: 2,
-    supportedModes: ["online-2p"],
-    status: "coming-soon",
-    displayOrder: 40,
-    accent: "#a78bfa",
-  },
-  {
-    id: "memory",
-    slug: "memory",
-    title: "神経衰弱",
-    description: "めくったカードのペアを当てる記憶力ゲーム。",
-    category: "カードゲーム",
-    minPlayers: 2,
-    maxPlayers: 4,
-    supportedModes: ["online-2p", "online-multi"],
-    status: "coming-soon",
-    displayOrder: 50,
-    accent: "#f472b6",
-  },
+  connectFourGame,
+  chessGame,
+  memoryGame,
 ];
 
 const byOrder = (a: GameMeta, b: GameMeta) => a.displayOrder - b.displayOrder;
