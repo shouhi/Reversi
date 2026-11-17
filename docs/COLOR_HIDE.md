@@ -343,3 +343,68 @@ Phase 3の脅威モデル表に加え、本監査で確認・強化：
 6. Vercel(本番)に `NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://<worker>` と `COLOR_HIDE_RT_SECRET`(同値) を設定、フェーズタイマー上書きを解除 → 再デプロイ。
 7. Vercel Spend Management / Upstash 予算上限 / Cloudflare 課金アラートを設定。
 8. 2ブラウザで実対戦スモーク → 問題時は上記ロールバックTier1/2。
+
+---
+
+# Phase 5 — 段階的本番公開の準備（2026-11-17）
+
+**承認範囲：第1段階の実行直前確認＋第2段階（限定公開）テスト準備のみ。** Cloudflareデプロイ／課金有効化／本番Secret設定／Vercel本番変更／mainマージは**未実施**。公開は3段階に分離：①Cloudflare本番基盤構築 → ②Preview（限定公開）で動作確認 → ③mainマージ＋Vercel本番。
+
+## 状態・アカウント・デプロイ事前確認（dry-run）
+
+- Git/PR：HEAD = PR #5 HEAD、`mergeable: MERGEABLE / CLEAN`（競合なし・4コミット先行・遅れ0）。VercelのPRプレビュー・チェックpass（プレビューであり本番ではない）。Draft維持。
+- **Cloudflareアカウント**：`wrangler whoami` により認証済み（OAuthトークン、Workers書込権限あり）＝ユーザー本人のアカウント `s.ide@zen-llc.co.jp`（Account ID `6b759fbb…c11f`）。**デプロイ可能な状態だが、本フェーズでは一切デプロイ・作成していない。**
+- **`wrangler deploy --dry-run`（アップロードなし）成功**：バンドル 61 KiB（gzip 17.8）。デプロイで作成されるもの＝Worker 1個（`color-hide-realtime`）＋ Durable Object クラス 1個（`ColorHide`、v1 SQLiteマイグレーションで宣言、永続データは保存しない）。`--var` 値は出力でも "(hidden)" 表示（漏洩なし）。
+- **本番／ステージング両方の deploy コマンドを dry-run で検証済み**（下記）。`--name` 上書きでステージング用の別Workerをトップレベル設定（DO binding＋migration）再利用で作成できることを確認。
+
+## セキュリティ（最終）
+
+- Secret必須＋dev拒否（DO＝`ENVIRONMENT=production`で空/dev値→接続拒否、アプリ`/catch`＝`VERCEL_ENV=production`で空/dev→403）。実値は非表示・非ログ・非コミット。
+- WS接続認証（helloトークンをアプリで検証）、**Origin制限（ワイルドカード対応・`isOriginAllowed`を単体テスト、不正Originは接続前に403—実workerdでE2E）**、ルーム単位分離（1ルーム=1DO＋roomId形式検証＋hello.roomId一致）、隠れプレイヤー位置保護（受信者別フィルタ）、捕獲のサーバー検証（距離+視線、確定はシークレット経路）、レート制限（40msg/s）、接続数上限（6）。
+- **古いDOメタでの誤判定防止（検証済み）**：捕獲も試合終了もアプリが最終権威。`/catch`（markCaught）は `phase==="seeking"` かつ対象が未捕獲hiderの時のみ有効で、それ以外は**no-op**（単体テスト追加：painting中の捕獲→phase不変・result無し・未捕獲）。すでに捕獲済みなら冪等no-op。よってDOのmetaが最大2.5s古くても、無効な捕獲や誤った試合終了は永続化されない。
+
+## 限定公開（Preview）テスト計画 — 本番ユーザー非影響
+
+**本番から完全分離した別スタック**で検証する（ワーカー・アプリ・Redisを分離）：
+
+1. **ステージングWorker**（別名 `color-hide-realtime-staging`、別DO名前空間 → 本番Workerとライブ状態を共有しない）：
+   `wrangler deploy --name color-hide-realtime-staging --var ENVIRONMENT:production --var COLOR_HIDE_APP_URL:<preview/staging app URL> --var 'COLOR_HIDE_ALLOWED_ORIGINS:https://*.vercel.app'` ＋ `wrangler secret put COLOR_HIDE_RT_SECRET --name color-hide-realtime-staging`（**本番とは別のステージング用シークレット**）。
+2. **Vercel Preview 環境変数**（Vercelは Production/Preview を別管理）：Preview スコープに
+   - `NEXT_PUBLIC_COLOR_HIDE_WS_URL = wss://color-hide-realtime-staging.<subdomain>.workers.dev`
+   - `COLOR_HIDE_RT_SECRET =`（ステージング用・同値をWorkerにも）
+   - **`KV_REST_API_* = 別途用意したPreview専用 Upstash DB`**（本番Redisと分離＝テストルームが本番データに混ざらない）。
+3. **Origin許可**：Preview URL は動的なので `https://*.vercel.app`（またはより厳しく `https://game-box-*-shouhis-projects.vercel.app`）をステージングWorkerの許可リストに設定（ワイルドカード対応済み）。
+4. **テスト手順**：Preview URLを数名に共有 → 2〜6人で対戦・ペイント・捕獲・勝敗・再戦・再接続を確認。Preview の DO は staging app（別Redis）を読むため、**本番ルーム・本番ユーザーに一切影響しない**。
+5. **分離の保証**：本番Worker・本番アプリ・本番Redis は上記のどの操作でも**不変**。ステージングは別Worker＋別デプロイ＋別DB。
+6. **テスト終了後の停止**：新規停止 `wrangler deploy --name color-hide-realtime-staging --var COLOR_HIDE_REALTIME_ENABLED:0` ／ 撤去 `wrangler delete --name color-hide-realtime-staging`（本番に無影響）。
+
+## デプロイコマンド（手順・要承認・未実行）
+
+**第1段階（本番Worker）**
+```bash
+wrangler login && wrangler whoami                      # アカウント確認（本人：s.ide@zen-llc.co.jp）
+# Workers Paid プラン有効化を確認（本番はHobby不可）
+wrangler secret put COLOR_HIDE_RT_SECRET --config cloudflare/color-hide/wrangler.toml   # 強いランダム値
+wrangler deploy --config cloudflare/color-hide/wrangler.toml \
+  --var ENVIRONMENT:production \
+  --var COLOR_HIDE_APP_URL:https://zen-gamebox.vercel.app \
+  --var COLOR_HIDE_ALLOWED_ORIGINS:https://zen-gamebox.vercel.app   # 初回でv1 migration適用
+curl https://color-hide-realtime.<subdomain>.workers.dev/health     # → ok
+```
+**第2段階（ステージング＋Preview）** … 上記「限定公開テスト計画」参照。
+**第3段階（本番公開）** … Vercel本番に `NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://color-hide-realtime...` と `COLOR_HIDE_RT_SECRET`（同値）を設定・再デプロイ → PR #5 を main にマージ。
+
+## 停止 vs 削除（明確に区別）
+
+| 操作 | 種別 | 影響 | 可逆性 |
+|---|---|---|---|
+| `--var COLOR_HIDE_REALTIME_ENABLED:0` + deploy | **停止**（新規接続のみ） | 新規WS→503、既存は継続 | 即復帰（再deploy） |
+| `wrangler rollback [<version>]` | **切り戻し** | 既存接続も切断、前バージョンへ | 可逆（再rollback/deploy） |
+| `wrangler delete` | **削除（最終手段）** | Worker/DO撤去、全切断 | 再deployで再作成（DOは空から） |
+| Vercel env解除＋再デプロイ | 配信停止 | 新規ページのみ（既存タブはリロードまで旧URL） | 再設定＋再デプロイ |
+
+削除（`wrangler delete`）は最終手段。通常は「停止（REALTIME_ENABLED=0）」→「切り戻し（rollback）」の順。いずれも **Redis/Upstashデータは不変**、DOは永続データ無しのため切断時も位置情報のみ消失・アプリ権威状態から継続。
+
+## コスト（再掲・2026-11-17）
+
+Cloudflare DO：100試合 $5 ／1,000 ~$5 ／10,000 ~$7（送信・帯域非課金、永続化なし）。支配的変動費はポーリング由来の Vercel Functions（Pro $20/席＋従量）＋Upstashコマンド（PAYG $2/1M）。合計概算：100=$5〜25、1,000=~$30、10,000=~$65〜75。無料枠は商用不可＆10k試合で超過（Vercel 1M呼び出し／Upstash 500K cmd）。予算管理：Vercel Spend Management・Upstash予算上限・Cloudflareアラート（ハード上限は無し＝要確認）。**課金操作は未実施。**

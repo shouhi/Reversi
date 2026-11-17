@@ -85,6 +85,31 @@ curl https://color-hide-realtime.<subdomain>.workers.dev/health   # → ok
 First deploy applies the `v1` SQLite migration (declares the DO class; we store no
 rows). The DO class name `ColorHide` ⇒ route namespace `color-hide`.
 
+## Preview / staging — limited-release testing (Stage 2, DOCUMENTED ONLY)
+
+Test from a Vercel **Preview** deployment against a SEPARATE staging stack so
+production users and data are never touched: a staging Worker + the preview app +
+a **separate Upstash DB**.
+
+```bash
+# A separate Worker (different name ⇒ different DO namespace, no shared state):
+wrangler deploy --config cloudflare/color-hide/wrangler.toml \
+  --name color-hide-realtime-staging \
+  --var ENVIRONMENT:production \
+  --var COLOR_HIDE_APP_URL:https://<your-preview-or-staging-app>.vercel.app \
+  --var 'COLOR_HIDE_ALLOWED_ORIGINS:https://*.vercel.app'   # Preview URLs are dynamic
+wrangler secret put COLOR_HIDE_RT_SECRET --name color-hide-realtime-staging   # staging-only secret
+```
+In Vercel, set **Preview-scoped** env vars (separate from Production):
+`NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://color-hide-realtime-staging.<sub>.workers.dev`,
+`COLOR_HIDE_RT_SECRET=<staging value>`, and **`KV_REST_API_*` pointing at a
+dedicated preview Upstash DB** (isolates test rooms from production Redis).
+
+The Origin allowlist accepts globs (`isOriginAllowed`): `https://*.vercel.app`, or
+tighter `https://<project>-*-<team>.vercel.app`. Stop staging with
+`--var COLOR_HIDE_REALTIME_ENABLED:0` (deploy) or `wrangler delete --name color-hide-realtime-staging` —
+neither touches the production Worker, app, or Redis.
+
 ## Emergency stop / rollback (DOCUMENTED ONLY — runnable runbook)
 
 > **Critical reality:** `NEXT_PUBLIC_COLOR_HIDE_WS_URL` is **inlined into the client

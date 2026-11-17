@@ -214,6 +214,26 @@ describe("phase progression over time (server clock)", () => {
     }
   });
 
+  it("ignores a catch outside the seeking phase (stale-meta safety: no false end)", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, 0);
+    for (const t of tokens) await setReady(store, roomId, t, true, 0);
+    const start = await startGame(store, roomId, tokens[0], 0, () => 0);
+    if (!start.ok) throw new Error("start failed");
+    const hiderIds = start.value.players.filter((p) => p.role === "hider").map((p) => p.id);
+
+    // During PAINTING (not seeking) — e.g. the DO acting on stale "seeking" meta.
+    const duringPainting = PREPARING_MS + 1000;
+    const res = await markCaught(store, roomId, hiderIds[0], duringPainting);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.phase).toBe("painting"); // phase unchanged
+      expect(res.value.result).toBeNull(); // round NOT ended
+      const target = res.value.players.find((p) => p.id === hiderIds[0]);
+      expect(target?.caught).toBe(false); // hider NOT caught
+    }
+  });
+
   it("host can return to the lobby, resetting roles and readiness", async () => {
     const store = freshStore();
     const { roomId, tokens } = await roomWith(store, 2, 0);

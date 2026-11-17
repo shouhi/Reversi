@@ -1,5 +1,9 @@
 import { routePartykitRequest } from "partyserver";
 import { ColorHide, type Env } from "./party";
+import {
+  isOriginAllowed,
+  parseOrigins,
+} from "../../../src/games/color-hide/lib/realtimeShared";
 
 /**
  * COLOR HIDE realtime Worker entry.
@@ -35,13 +39,9 @@ const worker = {
           return new Response("invalid room", { status: 400 });
         }
         // Origin allowlist (defense-in-depth vs cross-site WS; token auth is the
-        // real gate). Enforced only when configured AND the client sent an Origin.
-        const allowed = (env.COLOR_HIDE_ALLOWED_ORIGINS ?? "")
-          .split(",")
-          .map((s: string) => s.trim())
-          .filter(Boolean);
+        // real gate). Supports wildcard entries for dynamic Vercel Preview URLs.
         const origin = req.headers.get("Origin");
-        if (allowed.length > 0 && origin && !allowed.includes(origin)) {
+        if (!isOriginAllowed(origin, parseOrigins(env.COLOR_HIDE_ALLOWED_ORIGINS))) {
           return new Response("forbidden origin", { status: 403 });
         }
       },
