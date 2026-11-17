@@ -1,8 +1,14 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import GameRoom from "@/components/GameRoom";
+import GameRoom from "@/games/reversi/components/GameRoom";
 import { isValidRoomId } from "@/lib/tokens";
 
 export const dynamic = "force-dynamic";
+
+// Private, ephemeral game rooms must never be indexed or shared as a preview.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default async function RoomPage({
   params,

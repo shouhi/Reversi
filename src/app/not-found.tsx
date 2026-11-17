@@ -1,5 +1,4 @@
 import Link from "next/link";
-import CreateRoomButton from "@/components/CreateRoomButton";
 
 export default function NotFound() {
   return (
@@ -8,15 +7,12 @@ export default function NotFound() {
       <p className="mt-4 text-sm leading-relaxed text-muted">
         ページが見つかりません。ルームが存在しないか、期限切れの可能性があります。
       </p>
-      <div className="mt-8 w-full">
-        <CreateRoomButton label="新しい対戦を始める" />
-        <Link
-          href="/"
-          className="mt-4 block text-sm text-muted underline underline-offset-4"
-        >
-          トップへ戻る
-        </Link>
-      </div>
+      <Link
+        href="/"
+        className="mt-8 w-full rounded-xl bg-accent px-6 py-4 text-base font-semibold text-black transition active:scale-[0.98]"
+      >
+        ゲーム一覧へ戻る
+      </Link>
     </main>
   );
 }

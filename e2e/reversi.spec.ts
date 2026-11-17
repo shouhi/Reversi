@@ -24,7 +24,10 @@ test("two players create, join, play in sync, and recover", async ({
   // --- Player A (black / creator) ---------------------------------------
   const ctxA = await browser.newContext();
   const pageA = await ctxA.newPage();
+  // Start at the catalog, pick Reversi, then create the room from its page.
   await pageA.goto("/");
+  await pageA.getByRole("link", { name: "リバーシ を遊ぶ" }).click();
+  await pageA.waitForURL(/\/games\/reversi$/);
 
   await pageA.getByRole("button", { name: "対戦ルームを作成" }).click();
   await pageA.waitForURL(/\/room\/[a-z0-9]+/);
@@ -114,5 +117,38 @@ test("an unknown room shows a friendly error", async ({ page }) => {
   await page.goto("/room/doesnotexist99");
   await expect(
     page.getByRole("button", { name: "新しい対戦を始める" }),
+  ).toBeVisible();
+});
+
+test("the catalog lists the games as playable links", async ({ page }) => {
+  await page.goto("/");
+
+  // Every available game is listed as a live link to its detail page.
+  const reversiLink = page.getByRole("link", { name: "リバーシ を遊ぶ" });
+  await expect(reversiLink).toBeVisible();
+  await expect(page.getByRole("link", { name: "○×ゲーム を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "四目並べ を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "チェス を遊ぶ" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "神経衰弱 を遊ぶ" })).toBeVisible();
+
+  // Selecting Reversi navigates to its start page.
+  await reversiLink.click();
+  await expect(page).toHaveURL(/\/games\/reversi$/);
+  await expect(
+    page.getByRole("button", { name: "対戦ルームを作成" }),
+  ).toBeVisible();
+});
+
+test("the catalog and Reversi flow work on a mobile viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto("/");
+
+  const reversiLink = page.getByRole("link", { name: "リバーシ を遊ぶ" });
+  await expect(reversiLink).toBeVisible();
+  await reversiLink.click();
+  await expect(
+    page.getByRole("button", { name: "対戦ルームを作成" }),
   ).toBeVisible();
 });
