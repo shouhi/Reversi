@@ -1,5 +1,6 @@
 import type { InputState, RealtimeTransport } from "./transport";
 import type { ClientMsg, ServerMsg } from "./protocol";
+import { PARTY_NAME } from "../lib/realtimeShared";
 
 /**
  * WebSocket implementation of {@link RealtimeTransport}, pointed at the local WS
@@ -14,10 +15,22 @@ export interface WsTransportOptions {
   token: string | null;
 }
 
-/** Resolves the realtime host URL (env override, else same-host dev port). */
-export function resolveWsUrl(): string {
+/**
+ * Resolves the full WebSocket URL for a room.
+ *
+ * - PRODUCTION / Cloudflare: when `NEXT_PUBLIC_COLOR_HIDE_WS_URL` is set it is a
+ *   PartyServer base; we route by path to this room's Durable Object:
+ *   `${base}/parties/color-hide/<roomId>`.
+ * - LOCAL dev: no env → the local WS host on :1999 (roomId travels in the hello).
+ *
+ * Switching backends is therefore a single env var — no code change.
+ */
+export function resolveWsUrl(roomId: string): string {
   const env = process.env.NEXT_PUBLIC_COLOR_HIDE_WS_URL;
-  if (env) return env;
+  if (env) {
+    const base = env.replace(/\/$/, "");
+    return `${base}/parties/${PARTY_NAME}/${encodeURIComponent(roomId)}`;
+  }
   if (typeof window !== "undefined") {
     return `ws://${window.location.hostname}:1999`;
   }

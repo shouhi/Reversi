@@ -1,0 +1,28 @@
+# COLOR HIDE — realtime Worker (Cloudflare Durable Objects + PartyServer).
+#
+# Local dev (no account, no deploy):  npm run cf:dev   (runs workerd via wrangler)
+# Production deploy is DOCUMENTED ONLY in docs/COLOR_HIDE.md — do NOT run here.
+
+name = "color-hide-realtime"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# One Durable Object class = one room. SQLite-backed class (free-plan compatible);
+# we store NO durable data in it — it holds only ephemeral in-memory positions.
+[[durable_objects.bindings]]
+name = "ColorHide"
+class_name = "ColorHide"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ColorHide"]
+
+# Non-secret vars. Local dev overrides come from .dev.vars (gitignored).
+# PRODUCTION: set ENVIRONMENT=production, the real COLOR_HIDE_APP_URL and
+# COLOR_HIDE_ALLOWED_ORIGINS (e.g. via the dashboard or `wrangler deploy --var`),
+# and the secret via `wrangler secret put COLOR_HIDE_RT_SECRET`. The secret is
+# NEVER committed here. The DO fails closed if the dev secret is used in production.
+[vars]
+ENVIRONMENT = "development"
+COLOR_HIDE_APP_URL = "http://localhost:3100"
+COLOR_HIDE_ALLOWED_ORIGINS = ""

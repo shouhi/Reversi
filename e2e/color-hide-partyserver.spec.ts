@@ -1,0 +1,343 @@
+import { test, expect, type APIRequestContext } from "@playwright/test";
+import { WebSocket } from "ws";
+import { spawn, type ChildProcess } from "node:child_process";
+
+/**
+ * COLOR HIDE — PartyServer / Cloudflare Durable Object integration test.
+ *
+ * Runs the ACTUAL Worker on `wrangler dev` (local workerd — no Cloudflare account,
+ * no deploy) and drives real WebSocket clients against the Durable Object, with the
+ * Playwright-managed Next app as the room authority. Proves the production realtime
+ * path end-to-end: per-room DO routing, token auth, position sync, the no-info-leak
+ * guarantee, anti-teleport, catch → win, win-by-timer, 6 players, cross-room
+ * isolation, paint sharing, and reconnect.
+ *
+ * Runs only under the `partyserver` Playwright project: `npm run test:partyserver`.
+ */
+
+const APP = "http://localhost:3100";
+const WS = "ws://localhost:8787/parties/color-hide";
+const RT_SECRET = "color-hide-dev-rt-secret";
+
+let host: ChildProcess;
+
+async function waitForHealth(url: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return;
+    } catch {
+      /* not up */
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`wrangler dev did not become healthy at ${url}`);
+}
+
+test.beforeAll(async () => {
+  host = spawn(
+    `npx wrangler dev --config cloudflare/color-hide/wrangler.toml --port 8787 ` +
+      `--var ENVIRONMENT:development --var COLOR_HIDE_APP_URL:${APP} ` +
+      `--var COLOR_HIDE_RT_SECRET:${RT_SECRET}`,
+    { shell: true, env: { ...process.env }, stdio: "pipe" },
+  );
+  host.stderr?.on("data", (d) => {
+    const s = d.toString();
+    if (/EADDRINUSE|error/i.test(s)) console.error("[wrangler]", s.trim());
+  });
+  await waitForHealth("http://localhost:8787/health", 90_000);
+});
+
+test.afterAll(() => {
+  host?.kill("SIGKILL");
+});
+
+// --- HTTP helpers -----------------------------------------------------------
+async function createRoom(request: APIRequestContext, nickname: string) {
+  return (await request.post(`/api/games/color-hide/rooms`, { data: { nickname } })).json();
+}
+async function join(request: APIRequestContext, roomId: string, nickname: string) {
+  const res = await request.post(`/api/games/color-hide/rooms/${roomId}/join`, {
+    data: { nickname },
+  });
+  return { status: res.status(), body: res.ok() ? await res.json() : null };
+}
+async function ready(request: APIRequestContext, roomId: string, token: string) {
+  await request.post(`/api/games/color-hide/rooms/${roomId}/action`, {
+    headers: { "x-color-hide-token": token },
+    data: { action: "ready", ready: true },
+  });
+}
+async function start(request: APIRequestContext, roomId: string, token: string) {
+  const r = await request.post(`/api/games/color-hide/rooms/${roomId}/action`, {
+    headers: { "x-color-hide-token": token },
+    data: { action: "start" },
+  });
+  expect(r.ok()).toBeTruthy();
+}
+async function getRoom(request: APIRequestContext, roomId: string) {
+  return (await (await request.get(`/api/games/color-hide/rooms/${roomId}`)).json()).publicState;
+}
+async function waitForPhase(request: APIRequestContext, roomId: string, phase: string, ms = 25_000) {
+  const deadline = Date.now() + ms;
+  let last = "";
+  while (Date.now() < deadline) {
+    const s = await getRoom(request, roomId);
+    last = s.phase;
+    if (s.phase === phase) return s;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  throw new Error(`room ${roomId} never reached ${phase} (last ${last})`);
+}
+
+// --- WS client to the Durable Object ---------------------------------------
+interface Client {
+  ws: WebSocket;
+  welcome?: { role: string | null };
+  snaps: Array<{ players: Array<{ id: string; x: number; z: number; role: string | null }> }>;
+  errors: string[];
+  latest(): Client["snaps"][number] | undefined;
+  input(p: Partial<{ x: number; z: number; yaw: number; moving: boolean; running: boolean }>): void;
+  catch(id: string): void;
+  waitFor(pred: (c: Client) => boolean, ms?: number): Promise<void>;
+  close(): void;
+}
+
+function connect(roomId: string, playerId: string, token: string): Promise<Client> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${WS}/${roomId}`);
+    let seq = 0;
+    const c: Client = {
+      ws,
+      snaps: [],
+      errors: [],
+      latest() {
+        return this.snaps[this.snaps.length - 1];
+      },
+      input(p) {
+        seq += 1;
+        ws.send(
+          JSON.stringify({
+            type: "input",
+            seq,
+            t: Date.now(),
+            x: p.x ?? 0,
+            z: p.z ?? 0,
+            yaw: p.yaw ?? 0,
+            pitch: 0,
+            anim: "idle",
+            pose: "stand",
+            moving: p.moving ?? false,
+            running: p.running ?? true,
+          }),
+        );
+      },
+      catch(id) {
+        ws.send(JSON.stringify({ type: "catch", targetId: id }));
+      },
+      async waitFor(pred, ms = 8000) {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (pred(this)) return;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error("waitFor timed out");
+      },
+      close() {
+        ws.close();
+      },
+    };
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ type: "hello", roomId, playerId, token }));
+      resolve(c);
+    });
+    ws.on("message", (d) => {
+      let m: Record<string, unknown>;
+      try {
+        m = JSON.parse(d.toString());
+      } catch {
+        return;
+      }
+      if (m.type === "welcome") c.welcome = { role: m.role as string | null };
+      else if (m.type === "snapshot") c.snaps.push(m as never);
+      else if (m.type === "error") c.errors.push(String(m.message));
+    });
+    ws.on("error", reject);
+    setTimeout(() => reject(new Error("ws open timeout")), 8000);
+  });
+}
+
+/** Walks a player toward (x,z) by resending the target (the DO clamps each step). */
+async function moveTo(c: Client, x: number, z: number, yaw: number, steps = 30) {
+  for (let i = 0; i < steps; i++) {
+    c.input({ x, z, yaw, moving: true, running: true });
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+test("bad token is rejected by the Durable Object", async ({ request }) => {
+  const room = await createRoom(request, "H");
+  const c = await connect(room.roomId, room.playerId, "wrong");
+  await c.waitFor((x) => x.errors.length > 0);
+  expect(c.errors.join()).toMatch(/auth/i);
+  expect(c.welcome).toBeUndefined();
+  c.close();
+});
+
+test("2-player round over the DO: roles, sync, no info leak, anti-teleport, catch → win", async ({
+  request,
+}) => {
+  const h = await createRoom(request, "ホスト");
+  const g = await join(request, h.roomId, "ゲスト");
+  const roomId = h.roomId as string;
+  await ready(request, roomId, h.token);
+  await ready(request, roomId, g.body.token);
+  await start(request, roomId, h.token);
+
+  const started = await getRoom(request, roomId);
+  const seekerP = started.players.find((p: { role: string }) => p.role === "seeker");
+  const hiderP = started.players.find((p: { role: string }) => p.role === "hider");
+  const seekerTok = seekerP.id === h.playerId ? h.token : g.body.token;
+  const hiderTok = seekerP.id === h.playerId ? g.body.token : h.token;
+
+  const seeker = await connect(roomId, seekerP.id, seekerTok);
+  const hider = await connect(roomId, hiderP.id, hiderTok);
+  await seeker.waitFor((c) => c.welcome?.role === "seeker");
+  await hider.waitFor((c) => c.welcome?.role === "hider");
+  await waitForPhase(request, roomId, "seeking");
+
+  // No info leak: seeker faces the +Z wall (away from the hider) → receives no hiders.
+  for (let i = 0; i < 6; i++) {
+    seeker.input({ x: 0, z: 5, yaw: Math.PI, moving: false });
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  seeker.snaps.length = 0;
+  await seeker.waitFor((c) => c.snaps.length >= 3, 4000);
+  expect(seeker.snaps.some((s) => s.players.some((p) => p.id === hiderP.id))).toBe(false);
+  // Hider always receives the seeker.
+  await hider.waitFor((c) => (c.latest()?.players ?? []).some((p) => p.id === seekerP.id), 4000);
+
+  // Anti-teleport: a wild jump is clamped in the hider's view of the seeker.
+  for (let i = 0; i < 4; i++) {
+    seeker.input({ x: 9999, z: 9999, yaw: 0, moving: true, running: true });
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  const seen = (hider.latest()?.players ?? []).find((p) => p.id === seekerP.id)!;
+  expect(Math.abs(seen.x)).toBeLessThan(20);
+
+  // Catch → win: bring the hider in front of the seeker; seeker faces it and catches.
+  for (let i = 0; i < 6; i++) {
+    seeker.input({ x: 0, z: 5, yaw: 0, moving: false }); // face -Z, at spawn
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  await moveTo(hider, 0, 3, 0, 36); // ~2 units in front of the seeker
+  for (let i = 0; i < 8; i++) {
+    seeker.catch(hiderP.id);
+    await new Promise((r) => setTimeout(r, 150));
+    const s = await getRoom(request, roomId);
+    if (s.phase === "result") break;
+  }
+  const after = await getRoom(request, roomId);
+  expect(after.phase).toBe("result");
+  expect(after.result.winner).toBe("seeker");
+
+  seeker.close();
+  hider.close();
+});
+
+test("win by timer over the DO: hiders survive", async ({ request }) => {
+  const h = await createRoom(request, "H");
+  const g = await join(request, h.roomId, "G");
+  const roomId = h.roomId as string;
+  await ready(request, roomId, h.token);
+  await ready(request, roomId, g.body.token);
+  await start(request, roomId, h.token);
+  const result = await waitForPhase(request, roomId, "result", 30_000);
+  expect(result.result.winner).toBe("hider");
+});
+
+test("six players connect to the DO and are welcomed (1 seeker, 5 hiders)", async ({ request }) => {
+  const h = await createRoom(request, "H");
+  const roomId = h.roomId as string;
+  const players = [{ id: h.playerId, token: h.token }];
+  for (let i = 2; i <= 6; i++) {
+    const j = await join(request, roomId, `P${i}`);
+    players.push({ id: j.body.playerId, token: j.body.token });
+  }
+  for (const p of players) await ready(request, roomId, p.token);
+  await start(request, roomId, h.token);
+
+  const clients = await Promise.all(players.map((p) => connect(roomId, p.id, p.token)));
+  for (const c of clients) await c.waitFor((x) => x.welcome !== undefined, 10_000);
+  expect(clients.filter((c) => c.welcome?.role === "seeker")).toHaveLength(1);
+  expect(clients.filter((c) => c.welcome?.role === "hider")).toHaveLength(5);
+  for (const c of clients) c.close();
+});
+
+test("cross-room isolation: room A never sees room B's players", async ({ request }) => {
+  const a = await createRoom(request, "A-host");
+  const ag = await join(request, a.roomId, "A-guest");
+  const b = await createRoom(request, "B-host");
+  const bg = await join(request, b.roomId, "B-guest");
+  for (const [rid, ...toks] of [
+    [a.roomId, a.token, ag.body.token],
+    [b.roomId, b.token, bg.body.token],
+  ] as const) {
+    await ready(request, rid, toks[0]);
+    await ready(request, rid, toks[1]);
+    await start(request, rid, toks[0]);
+  }
+  await waitForPhase(request, a.roomId, "seeking");
+  await waitForPhase(request, b.roomId, "seeking");
+
+  const aHost = await connect(a.roomId, a.playerId, a.token);
+  const bHost = await connect(b.roomId, b.playerId, b.token);
+  await aHost.waitFor((c) => c.snaps.length >= 3, 5000);
+  const aIds = new Set(aHost.snaps.flatMap((s) => s.players.map((p) => p.id)));
+  // A's DO must only ever contain room A's players.
+  expect(aIds.has(b.playerId)).toBe(false);
+  expect(aIds.has(bg.body.playerId)).toBe(false);
+  expect([...aIds].every((id) => id === a.playerId || id === ag.body.playerId)).toBe(true);
+
+  aHost.close();
+  bHost.close();
+});
+
+test("paint sharing: a committed paint is retrievable by others", async ({ request }) => {
+  const h = await createRoom(request, "H");
+  const g = await join(request, h.roomId, "G");
+  const roomId = h.roomId as string;
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const commit = await request.post(`/api/games/color-hide/rooms/${roomId}/paint`, {
+    headers: { "x-color-hide-token": g.body.token },
+    data: { paint: png },
+  });
+  expect(commit.ok()).toBeTruthy();
+  const paints = (await (await request.get(`/api/games/color-hide/rooms/${roomId}/paint`)).json())
+    .paints;
+  expect(paints[g.body.playerId]).toBe(png);
+});
+
+test("reconnect to the DO with the same token/id", async ({ request }) => {
+  const h = await createRoom(request, "H");
+  const g = await join(request, h.roomId, "G");
+  const roomId = h.roomId as string;
+  await ready(request, roomId, h.token);
+  await ready(request, roomId, g.body.token);
+  await start(request, roomId, h.token);
+  await waitForPhase(request, roomId, "seeking");
+
+  const first = await connect(roomId, h.playerId, h.token);
+  await first.waitFor((c) => c.welcome !== undefined);
+  first.close();
+  await new Promise((r) => setTimeout(r, 400));
+  const again = await connect(roomId, h.playerId, h.token);
+  await again.waitFor((c) => c.welcome !== undefined, 8000);
+  expect(again.welcome).toBeDefined();
+  again.close();
+});

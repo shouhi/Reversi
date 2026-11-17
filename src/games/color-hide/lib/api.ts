@@ -3,27 +3,45 @@ import { jsonResponse, getToken, resolveStore } from "@/lib/apiHelpers";
 import type { ServiceError, ServiceErrorCode } from "./roomService";
 import { COLOR_HIDE_ROOM_PREFIX } from "./roomService";
 import { COLOR_HIDE_PAINT_PREFIX, type PaintRecord } from "./paintService";
+import {
+  DEV_RT_SECRET,
+  RT_SECRET_HEADER,
+  TOKEN_HEADER,
+} from "./realtimeShared";
 import type { RoomState } from "../types";
 
-/** Header carrying the caller's raw player token on every COLOR HIDE request. */
-export const TOKEN_HEADER = "x-color-hide-token";
+export { TOKEN_HEADER, RT_SECRET_HEADER, DEV_RT_SECRET };
 
 /**
- * Header the trusted realtime host uses to authenticate server-to-server writes
- * (currently only "a hider was caught"). The secret comes from the environment;
- * a well-known dev default lets local-first play work with zero config, and it is
- * NEVER a real credential. Production would set COLOR_HIDE_RT_SECRET.
+ * Resolves the realtime-host shared secret and whether it is misconfigured.
+ *
+ * FAIL CLOSED in production: on a Vercel production deployment (`VERCEL_ENV ===
+ * "production"`), the secret MUST be set explicitly and MUST NOT be the well-known
+ * dev default — otherwise `misconfigured` is true and `/catch` rejects everything.
+ * Locally and in CI (`VERCEL_ENV` unset) the dev default is accepted so local-first
+ * play works with zero config. The secret value is never logged.
  */
-export const RT_SECRET_HEADER = "x-color-hide-rt-secret";
-export const DEV_RT_SECRET = "color-hide-dev-rt-secret";
-
-export function realtimeSecret(): string {
-  return process.env.COLOR_HIDE_RT_SECRET || DEV_RT_SECRET;
+export function realtimeSecretConfig(): { secret: string; misconfigured: boolean } {
+  const explicit = process.env.COLOR_HIDE_RT_SECRET;
+  const isVercelProd = process.env.VERCEL_ENV === "production";
+  if (isVercelProd && (!explicit || explicit === DEV_RT_SECRET)) {
+    return { secret: "", misconfigured: true };
+  }
+  return { secret: explicit || DEV_RT_SECRET, misconfigured: false };
 }
 
-/** True if the request carries the correct realtime-host secret. */
+/** True if the request carries the correct realtime-host secret (fails closed in prod). */
 export function isTrustedRealtime(req: Request): boolean {
-  return req.headers.get(RT_SECRET_HEADER) === realtimeSecret();
+  const { secret, misconfigured } = realtimeSecretConfig();
+  if (misconfigured) {
+    // Never log the secret itself — only that it is unset/dev in production.
+    console.error(
+      "[color-hide] COLOR_HIDE_RT_SECRET is not configured for production; rejecting realtime catch requests.",
+    );
+    return false;
+  }
+  const provided = req.headers.get(RT_SECRET_HEADER);
+  return typeof provided === "string" && provided.length > 0 && provided === secret;
 }
 
 const STATUS_BY_CODE: Record<ServiceErrorCode, number> = {

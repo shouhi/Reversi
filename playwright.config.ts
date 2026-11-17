@@ -18,8 +18,17 @@ export default defineConfig({
   },
   projects: [
     {
+      // Default gate: all specs EXCEPT the PartyServer/Cloudflare one (which needs
+      // wrangler/workerd). Keeps `npm run test:e2e` fast and workerd-independent.
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      testIgnore: /color-hide-partyserver\.spec\.ts/,
+    },
+    {
+      // PartyServer / Durable Object integration — `npm run test:partyserver`.
+      name: "partyserver",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /color-hide-partyserver\.spec\.ts/,
     },
   ],
   webServer: {
@@ -37,7 +46,7 @@ export default defineConfig({
       COLOR_HIDE_PREPARING_MS: "4000",
       COLOR_HIDE_PAINTING_MS: "4000",
       COLOR_HIDE_HIDING_MS: "2000",
-      COLOR_HIDE_SEEKING_MS: "6000",
+      COLOR_HIDE_SEEKING_MS: "12000",
       COLOR_HIDE_RESULT_MS: "3000",
     },
   },

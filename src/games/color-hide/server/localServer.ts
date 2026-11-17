@@ -18,85 +18,20 @@
 
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import {
-  ColorHideServer,
-  type Outbound,
-  type RoomMeta,
-  type RoomMetaProvider,
-} from "../net/realtime";
+import { ColorHideServer, type Outbound } from "../net/realtime";
 import { parseClientMsg } from "../net/protocol";
 import { NET_TICK_HZ } from "../lib/constants";
+import { DEV_RT_SECRET } from "../lib/realtimeShared";
+import { authenticate as authPlayer, createHttpProvider } from "./httpProvider";
 
 const PORT = Number(process.env.COLOR_HIDE_WS_PORT ?? 1999);
 const APP_URL = process.env.COLOR_HIDE_APP_URL ?? "http://localhost:3000";
-const RT_SECRET = process.env.COLOR_HIDE_RT_SECRET ?? "color-hide-dev-rt-secret";
+const RT_SECRET = process.env.COLOR_HIDE_RT_SECRET ?? DEV_RT_SECRET;
 
-const roomUrl = (roomId: string) =>
-  `${APP_URL}/api/games/color-hide/rooms/${encodeURIComponent(roomId)}`;
-
-/** Maps the app's public room view into the meta slice the netcode needs. */
-function toMeta(publicState: {
-  phase: RoomMeta["phase"];
-  phaseStartedAt: number;
-  mapId: RoomMeta["mapId"];
-  seekerId: string | null;
-  players: Array<{ id: string; role: RoomMeta["players"][number]["role"]; caught: boolean }>;
-}): RoomMeta {
-  return {
-    phase: publicState.phase,
-    phaseStartedAt: publicState.phaseStartedAt,
-    mapId: publicState.mapId,
-    seekerId: publicState.seekerId,
-    players: publicState.players.map((p) => ({ id: p.id, role: p.role, caught: p.caught })),
-  };
-}
-
-const provider: RoomMetaProvider = {
-  async getMeta(roomId) {
-    try {
-      const res = await fetch(roomUrl(roomId), { cache: "no-store" });
-      if (!res.ok) return null;
-      const body = (await res.json()) as { publicState?: Parameters<typeof toMeta>[0] };
-      return body.publicState ? toMeta(body.publicState) : null;
-    } catch {
-      return null;
-    }
-  },
-  async persistCatch(roomId, hiderId) {
-    try {
-      await fetch(`${roomUrl(roomId)}/catch`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-color-hide-rt-secret": RT_SECRET,
-        },
-        body: JSON.stringify({ hiderId }),
-      });
-    } catch {
-      /* best-effort; the next tick re-reads meta anyway */
-    }
-  },
-};
-
-/** Verifies a player's token maps to the claimed id (via the app's own view). */
-async function authenticate(
-  roomId: string,
-  playerId: string,
-  token: string | undefined,
-): Promise<boolean> {
-  if (!token) return false;
-  try {
-    const res = await fetch(roomUrl(roomId), {
-      cache: "no-store",
-      headers: { "x-color-hide-token": token },
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { publicState?: { yourId?: string | null } };
-    return body.publicState?.yourId === playerId;
-  } catch {
-    return false;
-  }
-}
+// Shared provider + auth (identical code runs in the Cloudflare Durable Object).
+const provider = createHttpProvider({ appUrl: APP_URL, secret: RT_SECRET });
+const authenticate = (roomId: string, playerId: string, token: string | undefined) =>
+  authPlayer(APP_URL, roomId, playerId, token);
 
 // A tiny HTTP server shares the port so tooling (and Playwright) can health-check
 // readiness; the WebSocket server is attached to it.

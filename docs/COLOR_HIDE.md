@@ -222,3 +222,62 @@ COLOR_HIDE_APP_URL=http://localhost:3000 npm run dev:color-hide-rt
 - 2ブラウザの3D描画同期の自動E2E（現状はreal-socket netcode E2E＋手動ブラウザ確認でカバー）。
 - アニメーション拡充・効果音・捕獲後のスペクテイト導線。
 - dev限定のR3F+React19 StrictMove警告（本番ビルドでは出ない）。
+
+---
+
+# Phase 3 — Cloudflare本番基盤の実装（2026-11-17）
+
+**承認範囲：コード実装＋ローカル検証のみ。** Cloudflareへのデプロイ・課金変更・本番env変更・mainマージは**未実施**（別途承認が必要）。
+
+## 実装
+
+- **`cloudflare/color-hide/`**：Cloudflare Worker + **1ルーム=1 Durable Object**（`ColorHide`、PartyServer）。
+  既存の `ColorHideServer` netcode を**そのまま再利用**（トランスポート差し替えのみ）。DOは**揮発的な位置情報のみ**を保持し、
+  永続化はしない。部屋メタ（ロスター/フェーズ/マップ）はVercelアプリをHTTPで読む（`server/httpProvider.ts` を
+  ローカルホストと**共有**）。ルーティング：`/parties/color-hide/<roomId>`。
+- **ローカルホスト（`server/localServer.ts`）は維持**。クライアント transport はenv一本で切替：
+  `NEXT_PUBLIC_COLOR_HIDE_WS_URL` 未設定→ローカルホスト、設定→PartyServer（パスでDOへルーティング）。
+- 運用・デプロイ・ロールバック・環境変数・ローカル実行手順は **`cloudflare/color-hide/README.md`**。
+- コマンド：`npm run cf:dev`（workerdでローカル実行）、`npm run cf:typecheck`、`npm run test:partyserver`。
+
+## 信頼境界（Vercel ↔ Cloudflare）と脅威モデル
+
+**境界**：
+- **Vercel（アプリ＋Upstash）** = 永続・権威データの源泉（ロスター、ホスト、フェーズ＋開始時刻、マップ、確定ペイント、結果、トークンハッシュ）。
+- **Cloudflare DO** = 揮発的ライブ状態の権威（位置・向き・アニメ）。永続化なし。
+- 2者は**共有シークレット `COLOR_HIDE_RT_SECRET`** で結ばれる：DO→アプリの `/catch`（捕獲確定）のみがシークレットを要する server-to-server 書き込み。
+- クライアント（ブラウザ）は**どちらも信頼しない**：HTTPはトークン、WSはhelloでトークン認証。
+
+| 脅威 | 対策 | 実装/検証 |
+|---|---|---|
+| 偽トークンでWS接続 | helloのトークンをアプリGETで検証（yourId一致）、不一致は切断 | party.ts / **partyserver E2E（bad token拒否）** |
+| 他ルームへのアクセス | 1ルーム=1DO（`this.name`）、hello.roomId≠this.name は切断 | DO分離 / **E2E（cross-room isolation）** |
+| 隠れプレイヤーの位置漏洩 | 受信者別スナップショットフィルタ（鬼は可視hiderのみ） | buildSnapshot / **E2E（no info leak, 実DO）** |
+| クライアント自己申告の捕獲 | 捕獲はDOが距離＋視線で検証→シークレット付き`/catch`でのみ確定 | canCatch / markCaught / **E2E（catch→win）＋ `/catch` 403** |
+| テレポート/壁抜け | サーバー `validateMove`（クランプ＋衝突）、同一コードで再計算 | movement / **E2E（teleport clamp）** |
+| CSWSH（他サイトからのWS） | Origin許可リスト（`COLOR_HIDE_ALLOWED_ORIGINS`）を upgrade 前に検証 | index.ts onBeforeConnect |
+| メッセージ洪水 | 接続ごと 40 msg/s 上限、超過は切断。stale seq 破棄 | party.ts rateOk |
+| 接続過多 | 1ルーム6接続上限＋認証（ロスター≤6のみ接続可） | party.ts |
+| ペイント濫用 | PNG/WebPのみ・48KB・頻度/件数制限 | paintService |
+| 開発シークレットの本番使用 | `ENVIRONMENT=production` かつ secret 未設定/dev値 → DOは**fail closed**（接続拒否）。アプリ側も `VERCEL_ENV=production` で `/catch` を拒否 | party.ts `secret()` / api.ts `realtimeSecretConfig()` |
+| シークレットのログ流出 | シークレット値は一切ログ出力しない（wranglerも "(hidden)" 表示） | 全体 |
+
+**残リスク**：Origin検証はブラウザのみ（Node等Originなしクライアントはトークン認証が最終防衛線）。シークレットはVercel/Cloudflare双方に設定が必要（運用手順に明記）。
+
+## ローカル統合テスト結果（実workerd + 実WebSocket）
+
+`npm run test:partyserver`（workerdをwrangler devで起動し、実WSでDOを検証）— **7/7 pass**：
+bad token拒否 / 2人対戦（ロール・位置同期・情報漏洩なし・アンチテレポート・**捕獲→鬼勝利**）/ 時間切れ→隠れる側勝利 /
+6人welcome / **クロスルーム分離** / **ペイント共有** / 再接続。
+
+## コスト（2026-11-17 公式ページ基準・launch前に要再確認）
+
+- CF DO：100試合=**$5**、1,000=**~$5.1**、10,000=**~$7.3**（送信・帯域は非課金、DO永続化なし）。
+- **要注意（Cloudflareではなく Vercel 側）**：DOが約1秒毎にアプリ `GET /rooms/:id` を叩くため、Vercel関数呼び出しが試合秒数に比例（1万試合で約300万回/月）。緩和：`META_REFRESH_MS` を2–3秒へ、または push 型へ。
+- スパイク対策：アプリ側の上限（6人/TTL/レート制限/Origin）＋Cloudflare自動DDoS＋必要ならWAF/Rate-Limitingルール。**Workers/DOにハード上限課金停止は（調査時点で）無し**、通知アラートのみ → launch前に最新の費用上限設定を要確認。
+
+## デプロイ / ロールバック（手順書のみ・未実行）
+
+`cloudflare/color-hide/README.md` 参照。デプロイ＝`wrangler secret put` ＋ `wrangler deploy`（本番var上書き）＋Vercelに
+`NEXT_PUBLIC_COLOR_HIDE_WS_URL`/`COLOR_HIDE_RT_SECRET` 設定。ロールバック＝**キルスイッチ**（Vercelの
+`NEXT_PUBLIC_COLOR_HIDE_WS_URL` を外す→ロビー/ペイント/結果はHTTPで継続、ライブ対戦のみ停止）／`wrangler rollback`／`wrangler delete`。

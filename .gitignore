@@ -37,3 +37,7 @@ yarn-error.log*
 !.vscode/extensions.json
 *.tsbuildinfo
 .env*
+
+# cloudflare / wrangler
+.wrangler/
+cloudflare/**/.dev.vars

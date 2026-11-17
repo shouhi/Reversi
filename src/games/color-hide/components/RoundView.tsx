@@ -32,7 +32,7 @@ export default function RoundView({
   // One transport for the whole round.
   useEffect(() => {
     const t = createWsTransport({
-      url: resolveWsUrl(),
+      url: resolveWsUrl(roomId),
       roomId,
       playerId: me.id,
       token: getStoredToken(roomId),

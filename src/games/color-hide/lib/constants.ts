@@ -29,7 +29,11 @@ export const MAX_PLAYERS = 6;
  * production behaviour is unchanged whether or not an override is set.
  */
 function envMs(name: string, def: number): number {
-  const raw = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  // Access via globalThis so this file typechecks + runs in both Node and the
+  // Cloudflare Workers runtime (where `process` is simply absent).
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env;
+  const raw = env?.[name];
   const n = raw != null && raw !== "" ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? n : def;
 }
