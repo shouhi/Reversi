@@ -3,6 +3,7 @@ import { reversiGame } from "./reversi";
 import { ticTacToeGame } from "./tic-tac-toe";
 import { connectFourGame } from "./connect-four";
 import { chessGame } from "./chess";
+import { shogiGame } from "./shogi";
 import { memoryGame } from "./memory";
 
 /**
@@ -20,6 +21,7 @@ const GAMES: GameMeta[] = [
   ticTacToeGame,
   connectFourGame,
   chessGame,
+  shogiGame,
   memoryGame,
 ];
 
