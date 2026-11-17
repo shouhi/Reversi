@@ -1,47 +1,53 @@
-import CreateRoomButton from "@/components/CreateRoomButton";
+import type { Metadata } from "next";
+import SiteHeader from "@/components/layout/SiteHeader";
+import SiteFooter from "@/components/layout/SiteFooter";
+import GameCard from "@/components/game/GameCard";
+import { getAllGames } from "@/games/registry";
+import { SITE_NAME, SITE_TAGLINE } from "@/lib/site";
+
+export const metadata: Metadata = {
+  title: { absolute: `${SITE_NAME} — 友達と遊ぶブラウザゲーム` },
+  description: SITE_TAGLINE,
+  alternates: { canonical: "/" },
+  openGraph: {
+    title: `${SITE_NAME} — 友達と遊ぶブラウザゲーム`,
+    description: SITE_TAGLINE,
+    url: "/",
+    type: "website",
+  },
+};
 
 export default function HomePage() {
+  const games = getAllGames();
+
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center px-6 py-12">
-      <div className="flex w-full flex-col items-center text-center">
-        {/* Wordmark */}
-        <div className="mb-3 flex items-center gap-3" aria-hidden>
-          <span className="stone stone-black !h-5 !w-5 !animate-none" />
-          <span className="stone stone-white !h-5 !w-5 !animate-none" />
-        </div>
-        <h1 className="text-5xl font-bold tracking-[0.2em] text-ink sm:text-6xl">
-          REVERSI
-        </h1>
-        <p className="mt-4 text-base text-muted">友達と2人でオンライン対戦</p>
+    <div className="flex min-h-dvh flex-col">
+      <SiteHeader />
 
-        <div className="mt-12 w-full">
-          <CreateRoomButton />
-          <p className="mt-4 text-sm leading-relaxed text-muted">
-            ルームを作成すると招待URLが発行されます。
-            <br />
-            友達にURLを送るだけで、すぐに対戦できます。
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-10 sm:px-6 sm:py-14">
+        <section className="max-w-2xl">
+          <h1 className="text-3xl font-bold tracking-tight text-ink sm:text-4xl">
+            友達と遊ぶ、ブラウザゲーム
+          </h1>
+          <p className="mt-3 text-base leading-relaxed text-muted">
+            {SITE_TAGLINE}
+            <br className="hidden sm:block" />
+            登録もインストールも不要。遊びたいゲームを選んでください。
           </p>
-        </div>
+        </section>
 
-        <ol className="mt-12 w-full space-y-3 text-left text-sm text-muted">
-          <li className="flex gap-3">
-            <span className="font-mono text-accent">1.</span>
-            ルームを作成（あなたは黒・先手）
-          </li>
-          <li className="flex gap-3">
-            <span className="font-mono text-accent">2.</span>
-            招待URLを友達に共有
-          </li>
-          <li className="flex gap-3">
-            <span className="font-mono text-accent">3.</span>
-            友達が参加したら対局開始
-          </li>
-        </ol>
-      </div>
+        <section className="mt-10" aria-label="ゲーム一覧">
+          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {games.map((game) => (
+              <li key={game.id} className="flex">
+                <GameCard game={game} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      </main>
 
-      <footer className="mt-16 text-xs text-muted/70">
-        登録不要・無料・スマホ対応
-      </footer>
-    </main>
+      <SiteFooter />
+    </div>
   );
 }

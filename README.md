@@ -1,13 +1,21 @@
-# REVERSI — 友達と2人でオンライン対戦
+# ZEN GAMEBOX — 友達と遊ぶブラウザゲームプラットフォーム
 
-URLを共有するだけで、目の前の友達とそれぞれのスマホ・PCからすぐに遊べる、2人対戦専用のオンラインリバーシ（オセロ）です。**アカウント登録は不要**。ルームを作って招待URLを送るだけで対戦が始まります。
+URLを共有するだけで、友達とそれぞれのスマホ・PCからすぐに遊べるブラウザゲーム集です。**アカウント登録もインストールも不要**。ゲームを選んでルームを作り、招待URLを送るだけで対戦が始まります。
 
-- 🎯 登録・ログイン不要
+現在遊べるゲーム：
+
+- ♟️ **リバーシ（オセロ）** — 2人対戦。正確な8×8ルール（自動パス・勝敗判定つき）
+
+準備中（ロードマップ）：○×ゲーム / 四目並べ / チェス / 神経衰弱。
+
+- 🎯 登録・ログイン不要／インストール不要
+- 🧩 トップページのゲーム一覧から選んで遊ぶ
 - 🔗 ルーム作成 → URL共有 → その場で対戦
-- ♟️ 正確な8×8リバーシルール（自動パス・勝敗判定つき）
-- 🔄 盤面はポーリングで自動同期（二重操作・競合に強い設計）
 - 📱 スマホ縦画面を最優先したレスポンシブUI（320pxから対応）
-- 🌙 ダークテーマ × 深緑の盤面の落ち着いたデザイン
+- 🌙 ダークテーマの落ち着いたデザインでプラットフォーム全体を統一
+- ➕ **ゲームを追加しやすい設計** — 詳細は [`docs/ADDING_GAMES.md`](docs/ADDING_GAMES.md)
+
+> プロジェクトの全体像と設計原則は [`CLAUDE.md`](CLAUDE.md) にまとめています。
 
 ---
 
@@ -22,10 +30,23 @@ URLを共有するだけで、目の前の友達とそれぞれのスマホ・PC
 | データ保存 | Upstash Redis（REST） |
 | 排他制御 | Redis Lua スクリプトによる compare-and-set + version管理 |
 | 単体テスト | Vitest |
-| E2Eテスト | Playwright（2ブラウザコンテキスト） |
+| E2Eテスト | Playwright |
 | ホスティング | Vercel |
 
 専用のWebSocketサーバーは使用せず、1.2秒間隔のポーリングで盤面を同期します（目の前の友達との対戦が目的のため、この程度の遅延は許容）。
+
+---
+
+## URL構成
+
+| URL | 用途 |
+| --- | --- |
+| `/` | ゲーム一覧（トップ） |
+| `/games/reversi` | リバーシの開始/詳細ページ |
+| `/room/[roomId]` | リバーシの対局ページ（既存の共有URLと互換） |
+| `/api/rooms/*` | リバーシのAPI（既存と互換） |
+
+> 新しいゲームは `/games/<slug>` と `/api/games/<slug>/...` を使う規約です（[`docs/ADDING_GAMES.md`](docs/ADDING_GAMES.md)）。リバーシの `/room/*`・`/api/rooms/*` は後方互換のため維持しています。
 
 ---
 
@@ -34,29 +55,28 @@ URLを共有するだけで、目の前の友達とそれぞれのスマホ・PC
 ```
 src/
 ├── app/
-│   ├── page.tsx                      # トップページ
-│   ├── room/[roomId]/page.tsx        # 対局ページ
+│   ├── page.tsx                      # ゲーム一覧（トップ）
+│   ├── layout.tsx                    # 共通レイアウト / SEOメタデータ
 │   ├── not-found.tsx                 # 404
-│   └── api/rooms/
-│       ├── route.ts                  # POST   ルーム作成
-│       └── [roomId]/
-│           ├── route.ts              # GET    盤面取得（ポーリング）
-│           ├── join/route.ts         # POST   白で参加
-│           └── move/route.ts         # POST   着手
+│   ├── games/reversi/page.tsx        # リバーシ開始ページ
+│   ├── room/[roomId]/page.tsx        # 対局ページ（URL互換）
+│   └── api/rooms/                    # リバーシAPI（URL互換）
+├── games/
+│   ├── registry.ts                   # ゲームカタログ（唯一の真実）
+│   ├── types.ts                      # GameMeta など
+│   └── reversi/                      # リバーシ固有（engine / service / UI / 型）
+│       ├── index.ts                  #   カタログ登録用の GameMeta
+│       ├── lib/{engine,roomService,clientApi,api}.ts
+│       ├── hooks/useRoom.ts
+│       └── components/{Board,GameRoom,SharePanel,CreateRoomButton}.tsx
 ├── components/
-│   ├── GameRoom.tsx                  # 対局画面のメインクライアント
-│   ├── Board.tsx                     # 8×8盤面
-│   ├── SharePanel.tsx                # 招待URLのコピー/共有
-│   └── CreateRoomButton.tsx          # ルーム作成ボタン
-├── hooks/useRoom.ts                  # ポーリング同期フック
-└── lib/
-    ├── reversi.ts                    # 純粋なゲームロジック
-    ├── roomService.ts               # サーバー側の検証・状態遷移
-    ├── tokens.ts                     # トークン生成・ハッシュ
-    ├── apiHelpers.ts                 # APIレスポンス共通処理
-    ├── clientApi.ts                  # クライアントfetch + localStorage
-    ├── types.ts                      # 共有型
-    └── store/                        # 保存層（Redis / メモリ）
+│   ├── layout/{SiteHeader,SiteFooter}.tsx
+│   └── game/GameCard.tsx
+└── lib/                              # 複数ゲームで共有する基盤
+    ├── store/                        #   汎用の versioned KV ストア（Redis / メモリ）
+    ├── tokens.ts                     #   ルームID・トークン生成/ハッシュ
+    ├── apiHelpers.ts                 #   HTTPレスポンス共通処理
+    └── site.ts                       #   サイト名・SEO定数
 ```
 
 ---
@@ -93,6 +113,8 @@ npm run dev
 
 ブラウザで http://localhost:3000 を開きます。2人対戦を手元で試すには、**通常タブとシークレットタブ**（または別ブラウザ）で同じルームURLを開いてください。localStorageが分かれるため、黒・白それぞれのプレイヤーとして参加できます。
 
+> ⚠️ `.env.local` に本番の Upstash / `KV_REST_API_*` 認証情報が入っている場合、`REVERSI_MEMORY_STORE=1` を指定しても**Redisが優先**されます（認証情報があるときはRedisを使う設計）。本番データに触れずに動かすには、該当の環境変数を空にして起動してください。詳細は [`CLAUDE.md`](CLAUDE.md) の「Safety when testing locally」を参照。
+
 ---
 
 ## Upstash Redis（無料データベース）の作成方法
@@ -101,7 +123,7 @@ npm run dev
 
 1. https://console.upstash.com/ にアクセスしてサインアップ / ログイン。
 2. **Create Database** をクリック。
-   - Name: 任意（例 `reversi`）
+   - Name: 任意（例 `zen-gamebox`）
    - Type / Primary Region: 近いリージョンを選択
 3. 作成後、データベース詳細ページの **REST API** セクションを開く。
 4. 次の2つの値をコピーする。
@@ -109,7 +131,7 @@ npm run dev
    - `UPSTASH_REDIS_REST_TOKEN`
 5. ローカルの `.env.local` に貼り付ける（本番はVercelの環境変数に設定）。
 
-> 💡 Vercel Marketplace からも Upstash を数クリックで追加でき、環境変数が自動で注入されます（Vercelダッシュボード → プロジェクト → **Storage** → **Upstash Redis**）。
+> 💡 Vercel Marketplace からも Upstash を数クリックで追加でき、`KV_REST_API_URL` / `KV_REST_API_TOKEN` が自動で注入されます（Vercelダッシュボード → プロジェクト → **Storage** → **Upstash for Redis**）。本アプリはどちらの命名でも動作します。
 
 ---
 
@@ -119,7 +141,9 @@ npm run dev
 | --- | --- | --- |
 | `UPSTASH_REDIS_REST_URL` | 本番で必須 | Upstash の REST API URL |
 | `UPSTASH_REDIS_REST_TOKEN` | 本番で必須 | Upstash の REST API トークン |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | 任意 | Vercel Upstash Marketplace が自動注入（上記の代替） |
 | `REVERSI_MEMORY_STORE` | 任意（ローカル/テスト専用） | `1` でメモリストレージを使用。**本番では設定しないこと** |
+| `NEXT_PUBLIC_SITE_URL` | 任意 | OGP/canonical の絶対URL。未設定時はVercelの自動URL→localhost |
 
 - 認証情報は**サーバー側のみ**で使用され、クライアントには一切公開されません。
 - `.env.local` などの秘密情報は `.gitignore` 済みでGitにコミットされません。
@@ -133,10 +157,8 @@ npm run dev
 1. このリポジトリを GitHub などに push。
 2. https://vercel.com/new からリポジトリを **Import**。
 3. Framework は自動で **Next.js** と認識されます。
-4. **Environment Variables** に以下を追加：
-   - `UPSTASH_REDIS_REST_URL`
-   - `UPSTASH_REDIS_REST_TOKEN`
-   （または **Storage** タブから Upstash を接続すると自動設定）
+4. **Storage** タブから Upstash for Redis を接続（`KV_REST_API_*` が自動設定）。
+   もしくは **Environment Variables** に `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を追加。
 5. **Deploy** を押す。数十秒で公開URLが発行されます。
 
 ### 方法B：Vercel CLI
@@ -145,26 +167,22 @@ npm run dev
 npm i -g vercel          # CLIを導入
 vercel login             # 認証（ブラウザ/メール）
 vercel link              # プロジェクトに紐付け（初回のみ）
-
-# 環境変数を登録
-vercel env add UPSTASH_REDIS_REST_URL production
-vercel env add UPSTASH_REDIS_REST_TOKEN production
-
 vercel --prod            # 本番デプロイ
 ```
 
-> ⚠️ 環境変数 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を設定せずにデプロイすると、ルーム作成時に「Storage is not configured」エラーが表示されます（メモリストレージへ自動フォールバックしない安全設計のため）。
+> ⚠️ Redis の認証情報を設定せずにデプロイすると、ルーム作成時に「Storage is not configured」エラーが表示されます（メモリストレージへ自動フォールバックしない安全設計のため）。
 
 ---
 
-## 友達との対戦方法
+## 遊び方
 
 1. 公開URL（例 `https://your-app.vercel.app`）を開く。
-2. **「対戦ルームを作成」** を押す。あなたは **黒（先手）** になります。
-3. 表示された **招待URL** を「URLをコピー」または「共有」ボタンで友達に送る。
-4. 友達がURLを開くと **「白で参加する」** ボタンが表示されるので押してもらう。
-5. 両方の画面で自動的に対局が始まります。交互に石を置いて対戦！
-6. 終局すると石数と勝敗が表示され、**「新しい対戦を始める」** で次の対戦へ。
+2. ゲーム一覧から **リバーシ** を選ぶ。
+3. **「対戦ルームを作成」** を押す。あなたは **黒（先手）** になります。
+4. 表示された **招待URL** を「URLをコピー」または「共有」で友達に送る。
+5. 友達がURLを開くと **「白で参加する」** ボタンが表示されるので押してもらう。
+6. 両方の画面で自動的に対局が始まります。交互に石を置いて対戦！
+7. 終局すると石数と勝敗が表示されます。ゲーム一覧から別のゲームも選べます。
 
 - 自分の手番のときだけ盤面を操作できます（合法手には小さなドットが表示されます）。
 - 途中でリロードしても、同じプレイヤーとして復帰できます。
@@ -172,16 +190,24 @@ vercel --prod            # 本番デプロイ
 
 ---
 
+## ゲームの追加
+
+新しいブラウザゲームの追加手順・規約・テンプレートは [`docs/ADDING_GAMES.md`](docs/ADDING_GAMES.md) にまとめています。
+
+ゲーム固有のコードは `src/games/<slug>/` に閉じ込め、`src/games/registry.ts` にメタデータを追加するとトップの一覧に表示されます。
+
+---
+
 ## テスト実行方法
 
 ```bash
-# 単体テスト（ゲームロジック + API権限/二重操作/競合）
+# 単体テスト（ゲームロジック + API権限/二重操作/競合 + レジストリ）
 npm test
 
 # 監視モード
 npm run test:watch
 
-# E2Eテスト（2ブラウザで対戦フローを検証。Redis不要、メモリストレージで実行）
+# E2Eテスト（2ブラウザで対戦フロー + 一覧/遷移/モバイルを検証。Redis不要）
 npm run test:e2e
 
 # 型チェック / Lint / 本番ビルド
@@ -196,13 +222,14 @@ npm run build
 npx playwright install chromium
 ```
 
-E2Eは `playwright.config.ts` の `webServer` 設定により、自動で `npm run build && npm run start`（`REVERSI_MEMORY_STORE=1`）を起動してテストします。外部Redisの認証情報は不要です。
+E2Eは `playwright.config.ts` の `webServer` 設定により、自動で `npm run build && npm run start`（`REVERSI_MEMORY_STORE=1`）を起動してテストします。
+`.env.local` に本番のRedis認証情報がある場合は、前述のとおり該当の環境変数を空にして実行してください（本番データに触れないため）。
 
 ---
 
 ## 設計上のポイント（整合性・安全性）
 
-- **サーバーが唯一の正**：クライアントは「置きたいマス」だけを送信。石の反転・手番・勝敗はすべてサーバーが `src/lib/reversi.ts` で再計算します。クライアントの盤面は信用しません。
+- **サーバーが唯一の正**：クライアントは「置きたいマス」だけを送信。石の反転・手番・勝敗はすべてサーバーが純粋ロジックで再計算します。クライアントの盤面は信用しません。
 - **原子的更新**：ルーム更新は Redis の Lua スクリプトで「読み出し→version照合→書き込み」を一気に実行し、競合する更新を検出します（version不一致なら再取得してリトライ）。
 - **二重操作防止**：クライアントは送信中の入力を無効化し、サーバーも手番・合法手・versionを検証するため、連続タップや同時着手で状態が壊れません。
 - **トークン**：プレイヤーごとに推測困難なトークンを発行し、**ハッシュのみ**をRedisに保存。生トークンはブラウザの localStorage に保持し、リロード後も同じプレイヤーとして復帰できます。

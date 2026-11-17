@@ -1,12 +1,11 @@
-import { playMove } from "@/lib/roomService";
+import { playMove } from "@/games/reversi/lib/roomService";
 import { isValidRoomId } from "@/lib/tokens";
+import { jsonResponse, storageUnavailable } from "@/lib/apiHelpers";
 import {
   errorResponse,
-  getToken,
-  jsonResponse,
-  resolveStore,
-  storageUnavailable,
-} from "@/lib/apiHelpers";
+  getReversiToken,
+  resolveReversiStore,
+} from "@/games/reversi/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -41,14 +40,14 @@ export async function POST(
     });
   }
 
-  const resolved = resolveStore();
+  const resolved = resolveReversiStore();
   if (resolved.response) return resolved.response;
 
   try {
     const result = await playMove(
       resolved.store,
       roomId,
-      getToken(req),
+      getReversiToken(req),
       row,
       col,
     );

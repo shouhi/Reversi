@@ -1,4 +1,4 @@
-import type { PublicRoomState } from "./types";
+import type { PublicRoomState } from "../types";
 
 /** Client-side API + token helpers. Safe to import only in client components. */
 

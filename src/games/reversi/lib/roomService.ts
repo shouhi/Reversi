@@ -6,10 +6,16 @@ import {
   getNextTurn,
   isValidMove,
   type Player,
-} from "./reversi";
-import { generateRoomId, generateToken, hashToken } from "./tokens";
-import type { PublicRoomState, RoomState } from "./types";
-import type { RoomStore } from "./store/types";
+} from "./engine";
+import { generateRoomId, generateToken, hashToken } from "@/lib/tokens";
+import type { PublicRoomState, RoomState } from "../types";
+import type { KvStore } from "@/lib/store";
+
+/** The Reversi room store: a versioned-record KV store of RoomState. */
+export type RoomStore = KvStore<RoomState>;
+
+/** Redis key prefix for Reversi rooms. Kept as-is for data compatibility. */
+export const REVERSI_ROOM_PREFIX = "reversi:room:";
 
 /** Rooms live for 24 hours; every write refreshes the TTL. */
 export const ROOM_TTL_SECONDS = 24 * 60 * 60;
@@ -112,7 +118,7 @@ export async function createRoom(
       updatedAt: timestamp,
     };
 
-    const created = await store.create(state, ROOM_TTL_SECONDS);
+    const created = await store.create(roomId, state, ROOM_TTL_SECONDS);
     if (created) {
       return ok({
         roomId,
@@ -198,6 +204,7 @@ export async function joinRoom(
     };
 
     const cas = await store.compareAndSwap(
+      roomId,
       state.version,
       nextState,
       ROOM_TTL_SECONDS,
@@ -310,6 +317,7 @@ export async function playMove(
     };
 
     const cas = await store.compareAndSwap(
+      roomId,
       state.version,
       nextState,
       ROOM_TTL_SECONDS,

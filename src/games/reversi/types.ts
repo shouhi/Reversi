@@ -1,4 +1,4 @@
-import type { Board, Player } from "./reversi";
+import type { Board, Player } from "./lib/engine";
 
 export type RoomStatus = "waiting" | "playing" | "finished";
 export type Winner = Player | "draw" | null;

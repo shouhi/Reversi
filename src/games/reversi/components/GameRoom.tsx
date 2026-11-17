@@ -2,19 +2,19 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import Board, { cellKey } from "@/components/Board";
-import SharePanel from "@/components/SharePanel";
-import CreateRoomButton from "@/components/CreateRoomButton";
-import { useRoom } from "@/hooks/useRoom";
-import { apiJoinRoom, apiMove, storeToken } from "@/lib/clientApi";
+import Board, { cellKey } from "./Board";
+import SharePanel from "./SharePanel";
+import CreateRoomButton from "./CreateRoomButton";
+import { useRoom } from "../hooks/useRoom";
+import { apiJoinRoom, apiMove, storeToken } from "../lib/clientApi";
 import {
   applyMove as applyMoveToBoard,
   getValidMoves,
   isValidMove,
   type Board as BoardType,
   type Player,
-} from "@/lib/reversi";
-import type { PublicRoomState } from "@/lib/types";
+} from "../lib/engine";
+import type { PublicRoomState } from "../types";
 
 const roleLabel = (p: Player) => (p === "black" ? "黒" : "白");
 

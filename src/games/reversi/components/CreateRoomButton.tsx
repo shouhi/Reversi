@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiCreateRoom, storeToken } from "@/lib/clientApi";
+import { apiCreateRoom, storeToken } from "../lib/clientApi";
 
 export default function CreateRoomButton({
   label = "対戦ルームを作成",

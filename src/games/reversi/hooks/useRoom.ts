@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiGetRoom } from "@/lib/clientApi";
-import type { PublicRoomState } from "@/lib/types";
+import { apiGetRoom } from "../lib/clientApi";
+import type { PublicRoomState } from "../types";
 
 /** Poll cadence. The spec targets 1–1.5s for a face-to-face game. */
 export const POLL_MS = 1200;

@@ -1,38 +1,51 @@
-import type { RoomState } from "../types";
-
 export type CasResult = "ok" | "conflict" | "not_found";
 
 /**
- * Storage abstraction for room records. Two implementations exist:
- *   - RedisStore: production, backed by Upstash with an atomic Lua compare-and-set.
- *   - MemoryStore: a single-process in-memory map used for tests / local dev only.
+ * Any record this store can hold must carry a numeric `version`, which the
+ * optimistic compare-and-set is keyed on. This is the one field the storage
+ * layer understands; everything else is opaque JSON owned by the game.
+ */
+export interface VersionedRecord {
+  version: number;
+}
+
+/**
+ * Generic storage abstraction for versioned game records (one per "room").
+ * It is deliberately game-agnostic: a game picks a key prefix (e.g.
+ * `reversi:room:`) and a record type, and gets atomic create / read /
+ * compare-and-set across serverless instances for free.
+ *
+ * Two implementations exist:
+ *   - RedisStore : production, backed by Upstash with an atomic Lua CAS.
+ *   - MemoryStore: a single-process in-memory map for tests / local dev only.
  *
  * All writes are optimistic-concurrency safe: `compareAndSwap` only persists the
- * new state when the stored version still matches the caller's expectation.
+ * new record when the stored version still matches the caller's expectation.
  */
-export interface RoomStore {
+export interface KvStore<T extends VersionedRecord> {
   /** The implementation name, for diagnostics. */
   readonly kind: "redis" | "memory";
 
-  /** Returns the room, or null if it does not exist / has expired. */
-  get(roomId: string): Promise<RoomState | null>;
+  /** Returns the record, or null if it does not exist / has expired. */
+  get(id: string): Promise<T | null>;
 
   /**
-   * Creates the room only if it does not already exist (set-if-absent).
-   * Returns false if a room with that id already exists.
+   * Creates the record only if the id is not already taken (set-if-absent).
+   * Returns false if a record with that id already exists.
    */
-  create(state: RoomState, ttlSeconds: number): Promise<boolean>;
+  create(id: string, record: T, ttlSeconds: number): Promise<boolean>;
 
   /**
-   * Atomically replaces the room ONLY IF its currently-stored version equals
+   * Atomically replaces the record ONLY IF its currently-stored version equals
    * `expectedVersion`. Also refreshes the TTL. Returns:
    *   - "ok"        : write succeeded
    *   - "conflict"  : stored version differed (a concurrent write won)
-   *   - "not_found" : the room no longer exists
+   *   - "not_found" : the record no longer exists
    */
   compareAndSwap(
+    id: string,
     expectedVersion: number,
-    nextState: RoomState,
+    next: T,
     ttlSeconds: number,
   ): Promise<CasResult>;
 }

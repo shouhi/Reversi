@@ -1,10 +1,23 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { SITE_NAME, SITE_DESCRIPTION, getSiteUrl } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "REVERSI — 友達と2人でオンライン対戦",
-  description:
-    "URLを共有するだけで、友達と2人でその場でリバーシ（オセロ）を遊べるオンライン対戦。登録不要。",
+  metadataBase: getSiteUrl(),
+  title: {
+    default: `${SITE_NAME} — 友達と遊ぶブラウザゲーム`,
+    template: `%s | ${SITE_NAME}`,
+  },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  openGraph: {
+    siteName: SITE_NAME,
+    type: "website",
+    locale: "ja_JP",
+  },
+  twitter: {
+    card: "summary",
+  },
 };
 
 export const viewport: Viewport = {

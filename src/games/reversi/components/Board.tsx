@@ -1,6 +1,6 @@
 "use client";
 
-import type { Board as BoardType } from "@/lib/reversi";
+import type { Board as BoardType } from "../lib/engine";
 
 export const cellKey = (row: number, col: number) => `${row},${col}`;
 

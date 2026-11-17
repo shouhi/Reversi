@@ -1,23 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createMemoryStore, __resetMemoryStore } from "./store/memory";
+import { createMemoryStore, __resetMemoryStore } from "@/lib/store/memory";
 import {
   getStore,
   StoreNotConfiguredError,
   __resetStoreCache,
-} from "./store";
+} from "@/lib/store";
 import {
   createRoom,
   joinRoom,
   playMove,
   getRoomView,
+  REVERSI_ROOM_PREFIX,
 } from "./roomService";
-import { hashToken } from "./tokens";
-import type { RoomState } from "./types";
-import type { Board, Player } from "./reversi";
+import { hashToken } from "@/lib/tokens";
+import type { RoomState } from "../types";
+import type { Board, Player } from "./engine";
 
 function freshStore() {
   __resetMemoryStore();
-  return createMemoryStore();
+  return createMemoryStore<RoomState>(REVERSI_ROOM_PREFIX);
 }
 
 /** Sets up a started game and returns the store plus both players' tokens. */
@@ -250,7 +251,7 @@ describe("playMove — game end", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    expect(await store.create(seeded, 3600)).toBe(true);
+    expect(await store.create(seeded.roomId, seeded, 3600)).toBe(true);
 
     const result = await playMove(store, seeded.roomId, blackToken, 0, 0);
     expect(result.ok).toBe(true);
@@ -282,7 +283,7 @@ describe("getStore — store selection", () => {
     vi.stubEnv("KV_REST_API_TOKEN", "");
     vi.stubEnv("REVERSI_MEMORY_STORE", "");
     vi.stubEnv("NODE_ENV", "production");
-    expect(() => getStore()).toThrow(StoreNotConfiguredError);
+    expect(() => getStore(REVERSI_ROOM_PREFIX)).toThrow(StoreNotConfiguredError);
   });
 
   it("accepts the Vercel Upstash KV_* env var names", () => {
@@ -290,13 +291,13 @@ describe("getStore — store selection", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
     vi.stubEnv("KV_REST_API_URL", "https://example.upstash.io");
     vi.stubEnv("KV_REST_API_TOKEN", "example-token");
-    expect(getStore().kind).toBe("redis");
+    expect(getStore(REVERSI_ROOM_PREFIX).kind).toBe("redis");
   });
 
   it("prefers Redis when credentials are present", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://example.upstash.io");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "example-token");
-    expect(getStore().kind).toBe("redis");
+    expect(getStore(REVERSI_ROOM_PREFIX).kind).toBe("redis");
   });
 
   it("uses memory only when explicitly opted in", () => {
@@ -306,6 +307,6 @@ describe("getStore — store selection", () => {
     vi.stubEnv("KV_REST_API_TOKEN", "");
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("REVERSI_MEMORY_STORE", "1");
-    expect(getStore().kind).toBe("memory");
+    expect(getStore(REVERSI_ROOM_PREFIX).kind).toBe("memory");
   });
 });

@@ -1,8 +1,8 @@
-import type { RoomStore } from "./types";
+import type { KvStore, VersionedRecord } from "./types";
 import { createRedisStore } from "./redis";
 import { createMemoryStore } from "./memory";
 
-export type { RoomStore, CasResult } from "./types";
+export type { KvStore, CasResult, VersionedRecord } from "./types";
 
 /** Thrown when no usable store is configured (and we refuse to guess one). */
 export class StoreNotConfiguredError extends Error {
@@ -17,18 +17,24 @@ export class StoreNotConfiguredError extends Error {
   }
 }
 
-let cached: RoomStore | null = null;
+// One store instance per key prefix. All games share the same Redis
+// credentials / in-memory map; the prefix namespaces their records.
+const cache = new Map<string, KvStore<VersionedRecord>>();
 
 /**
- * Resolves the active store. Order of precedence:
+ * Resolves a store for records under `keyPrefix` (e.g. `reversi:room:`).
+ * Order of precedence:
  *   1. Upstash Redis, when both REST credentials are present (the only option
  *      that works across serverless instances — i.e. production).
  *   2. In-memory, ONLY when explicitly opted in via REVERSI_MEMORY_STORE=1 or
  *      when running under the test runner (NODE_ENV=test).
  *   3. Otherwise throw — we never silently fall back to memory in production.
  */
-export function getStore(): RoomStore {
-  if (cached) return cached;
+export function getStore<T extends VersionedRecord>(
+  keyPrefix: string,
+): KvStore<T> {
+  const cached = cache.get(keyPrefix);
+  if (cached) return cached as KvStore<T>;
 
   // Accept both naming conventions:
   //   - UPSTASH_REDIS_REST_URL / _TOKEN  (Upstash-native / manual setup)
@@ -37,23 +43,24 @@ export function getStore(): RoomStore {
     process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   const token =
     process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+
+  let store: KvStore<T>;
   if (url && token) {
-    cached = createRedisStore(url, token);
-    return cached;
-  }
-
-  const memoryOptIn =
+    store = createRedisStore<T>(url, token, keyPrefix);
+  } else if (
     process.env.REVERSI_MEMORY_STORE === "1" ||
-    process.env.NODE_ENV === "test";
-  if (memoryOptIn) {
-    cached = createMemoryStore();
-    return cached;
+    process.env.NODE_ENV === "test"
+  ) {
+    store = createMemoryStore<T>(keyPrefix);
+  } else {
+    throw new StoreNotConfiguredError();
   }
 
-  throw new StoreNotConfiguredError();
+  cache.set(keyPrefix, store as KvStore<VersionedRecord>);
+  return store;
 }
 
-/** Test-only: drop the cached store so env changes take effect. */
+/** Test-only: drop cached stores so env changes take effect. */
 export function __resetStoreCache(): void {
-  cached = null;
+  cache.clear();
 }

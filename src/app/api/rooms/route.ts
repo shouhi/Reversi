@@ -1,17 +1,13 @@
-import { createRoom } from "@/lib/roomService";
-import {
-  errorResponse,
-  jsonResponse,
-  resolveStore,
-  storageUnavailable,
-} from "@/lib/apiHelpers";
+import { createRoom } from "@/games/reversi/lib/roomService";
+import { jsonResponse, storageUnavailable } from "@/lib/apiHelpers";
+import { errorResponse, resolveReversiStore } from "@/games/reversi/lib/api";
 
 // This route touches per-request storage; never statically cached.
 export const dynamic = "force-dynamic";
 
 /** POST /api/rooms — create a new room; the creator becomes black (first). */
 export async function POST(): Promise<Response> {
-  const resolved = resolveStore();
+  const resolved = resolveReversiStore();
   if (resolved.response) return resolved.response;
 
   try {

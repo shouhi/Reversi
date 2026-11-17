@@ -1,12 +1,11 @@
-import { getRoomView } from "@/lib/roomService";
+import { getRoomView } from "@/games/reversi/lib/roomService";
 import { isValidRoomId } from "@/lib/tokens";
+import { jsonResponse, storageUnavailable } from "@/lib/apiHelpers";
 import {
   errorResponse,
-  getToken,
-  jsonResponse,
-  resolveStore,
-  storageUnavailable,
-} from "@/lib/apiHelpers";
+  getReversiToken,
+  resolveReversiStore,
+} from "@/games/reversi/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -23,11 +22,11 @@ export async function GET(
     });
   }
 
-  const resolved = resolveStore();
+  const resolved = resolveReversiStore();
   if (resolved.response) return resolved.response;
 
   try {
-    const result = await getRoomView(resolved.store, roomId, getToken(req));
+    const result = await getRoomView(resolved.store, roomId, getReversiToken(req));
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });
   } catch (e) {

@@ -14,7 +14,7 @@ import {
   isGameOver,
   isValidMove,
   opponent,
-} from "./reversi";
+} from "./engine";
 
 /** Builds a board from a compact string map: `.`=empty, `B`=black, `W`=white. */
 function boardFromRows(rows: string[]): Board {

@@ -24,7 +24,10 @@ test("two players create, join, play in sync, and recover", async ({
   // --- Player A (black / creator) ---------------------------------------
   const ctxA = await browser.newContext();
   const pageA = await ctxA.newPage();
+  // Start at the catalog, pick Reversi, then create the room from its page.
   await pageA.goto("/");
+  await pageA.getByRole("link", { name: "リバーシ を遊ぶ" }).click();
+  await pageA.waitForURL(/\/games\/reversi$/);
 
   await pageA.getByRole("button", { name: "対戦ルームを作成" }).click();
   await pageA.waitForURL(/\/room\/[a-z0-9]+/);
@@ -114,5 +117,41 @@ test("an unknown room shows a friendly error", async ({ page }) => {
   await page.goto("/room/doesnotexist99");
   await expect(
     page.getByRole("button", { name: "新しい対戦を始める" }),
+  ).toBeVisible();
+});
+
+test("the catalog lists games and only links playable ones", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  // Reversi is listed as a live link to its detail page.
+  const reversiLink = page.getByRole("link", { name: "リバーシ を遊ぶ" });
+  await expect(reversiLink).toBeVisible();
+
+  // A coming-soon game is listed, shows 準備中, and is NOT a clickable link.
+  await expect(page.getByRole("heading", { name: "○×ゲーム" })).toBeVisible();
+  await expect(page.getByText("準備中").first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /○×ゲーム/ })).toHaveCount(0);
+
+  // Selecting Reversi navigates to its start page.
+  await reversiLink.click();
+  await expect(page).toHaveURL(/\/games\/reversi$/);
+  await expect(
+    page.getByRole("button", { name: "対戦ルームを作成" }),
+  ).toBeVisible();
+});
+
+test("the catalog and Reversi flow work on a mobile viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto("/");
+
+  const reversiLink = page.getByRole("link", { name: "リバーシ を遊ぶ" });
+  await expect(reversiLink).toBeVisible();
+  await reversiLink.click();
+  await expect(
+    page.getByRole("button", { name: "対戦ルームを作成" }),
   ).toBeVisible();
 });
