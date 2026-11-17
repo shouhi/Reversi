@@ -1,0 +1,10 @@
+# COLOR HIDE realtime Worker — LOCAL dev vars. Copy to `.dev.vars` (gitignored).
+# These are DEVELOPMENT values only. Never commit real secrets.
+
+ENVIRONMENT=development
+# The local Next app (Playwright uses :3100; `npm run dev` uses :3000).
+COLOR_HIDE_APP_URL=http://localhost:3100
+# Dev-only shared secret. The app accepts this too when not on Vercel production.
+COLOR_HIDE_RT_SECRET=color-hide-dev-rt-secret
+# Empty = allow any Origin in dev. In production set to your site origin.
+COLOR_HIDE_ALLOWED_ORIGINS=

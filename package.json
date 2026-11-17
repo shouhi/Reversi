@@ -4,32 +4,45 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:color-hide-rt": "tsx src/games/color-hide/server/localServer.ts",
+    "cf:dev": "wrangler dev --config cloudflare/color-hide/wrangler.toml --port 8787",
+    "cf:typecheck": "tsc -p cloudflare/color-hide/tsconfig.json",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:ui": "playwright test --project=chromium --ui",
+    "test:partyserver": "playwright test --project=partyserver"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
     "@upstash/redis": "^1.34.3",
     "next": "^15.5.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.187.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261117.1",
     "@eslint/eslintrc": "^3.2.0",
     "@playwright/test": "^1.49.1",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.6",
     "@types/react-dom": "^19.0.3",
+    "@types/ws": "^8.18.2",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.5.4",
+    "partyserver": "^0.5.10",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "wrangler": "^4.164.0",
+    "ws": "^8.23.0"
   }
 }
