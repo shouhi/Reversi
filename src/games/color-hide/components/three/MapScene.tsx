@@ -2,16 +2,26 @@
 
 import { useMemo } from "react";
 import type { MapId } from "../../types";
+import type { Quality } from "../../lib/quality";
 import { getMap } from "../../lib/maps";
 
 /**
  * Renders a map from its pure geometry: a floor sized to the bounds plus a box
  * per obstacle AABB. Because the rendered boxes ARE the collision/occlusion AABBs,
  * what blocks your view is exactly what you see — no invisible walls, no seeing
- * through solid cover. Theme colors come from the map definition.
+ * through solid cover. Theme colors come from the map definition. On the "low"
+ * quality tier the directional light stops casting shadows and the shadow map is
+ * smaller, cutting GPU cost on weak devices.
  */
-export default function MapScene({ mapId }: { mapId: MapId }) {
+export default function MapScene({
+  mapId,
+  quality = "high",
+}: {
+  mapId: MapId;
+  quality?: Quality;
+}) {
   const map = useMemo(() => getMap(mapId), [mapId]);
+  const low = quality === "low";
 
   const floorW = map.bounds.max.x - map.bounds.min.x;
   const floorD = map.bounds.max.z - map.bounds.min.z;
@@ -20,14 +30,14 @@ export default function MapScene({ mapId }: { mapId: MapId }) {
 
   return (
     <group>
-      <hemisphereLight args={["#ffffff", map.theme.floor, 0.6]} />
-      <ambientLight intensity={0.35} />
+      <hemisphereLight args={["#ffffff", map.theme.floor, low ? 0.8 : 0.6]} />
+      <ambientLight intensity={low ? 0.5 : 0.35} />
       <directionalLight
         position={[floorW * 0.4, 14, floorD * 0.3]}
         intensity={1.0}
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        castShadow={!low}
+        shadow-mapSize-width={low ? 512 : 1024}
+        shadow-mapSize-height={low ? 512 : 1024}
       />
 
       {/* Floor */}

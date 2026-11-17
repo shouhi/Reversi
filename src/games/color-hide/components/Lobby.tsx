@@ -10,7 +10,14 @@ import {
 } from "../lib/clientApi";
 import { allMaps } from "../lib/maps";
 import { MAX_PLAYERS, MIN_PLAYERS } from "../lib/constants";
+import { getQualityPref, setQualityPref, type QualityPref } from "../lib/quality";
 import type { PublicPlayer, PublicRoomState } from "../types";
+
+const QUALITY_OPTIONS: { value: QualityPref; label: string }[] = [
+  { value: "auto", label: "自動" },
+  { value: "high", label: "高" },
+  { value: "low", label: "低" },
+];
 
 interface LobbyProps {
   roomId: string;
@@ -24,6 +31,7 @@ export default function Lobby({ roomId, state, me, onChanged }: LobbyProps) {
   const [copied, setCopied] = useState(false);
   const [nick, setNick] = useState(me.nickname);
   const [error, setError] = useState<string | null>(null);
+  const [quality, setQuality] = useState<QualityPref>(() => getQualityPref());
 
   const isHost = me.isHost;
   const readyCount = state.players.filter((p) => p.ready).length;
@@ -163,6 +171,30 @@ export default function Lobby({ roomId, state, me, onChanged }: LobbyProps) {
               </button>
             </div>
           </label>
+
+          <div className="text-xs font-medium text-muted">
+            描画品質
+            <div className="mt-1 flex gap-1">
+              {QUALITY_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    setQualityPref(opt.value);
+                    setQuality(opt.value);
+                  }}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-sm ring-1 ring-line ${
+                    quality === opt.value ? "bg-accent text-bg" : "bg-bg text-ink"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-[10px] text-muted">
+              スマホで重い場合は「低」。次のラウンドから適用されます。
+            </p>
+          </div>
 
           <button
             type="button"

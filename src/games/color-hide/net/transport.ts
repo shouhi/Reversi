@@ -22,17 +22,35 @@ export interface InputState {
   running: boolean;
 }
 
+/**
+ * Connection lifecycle, surfaced to the UI so it can clearly show "connecting /
+ * reconnecting / failed" rather than silently pretending the game is live.
+ */
+export type ConnectionStatus =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected"
+  | "failed";
+
 export interface RealtimeTransport {
   /** Whether the socket is currently open. */
   readonly connected: boolean;
+  /** The current lifecycle status. */
+  readonly status: ConnectionStatus;
   /** Register the single handler for inbound server messages. */
   onMessage(cb: (msg: ServerMsg) => void): void;
-  /** Register a connection-state change handler. */
-  onStatus(cb: (connected: boolean) => void): void;
+  /**
+   * Register a status handler. The current status is delivered immediately on
+   * subscribe, then on every change.
+   */
+  onStatus(cb: (status: ConnectionStatus) => void): void;
   /** Send a movement/look/anim update (the server validates it). */
   sendInput(input: InputState): void;
   /** Seeker catch attempt (the server validates distance + line of sight). */
   sendCatch(targetId: string): void;
-  /** Close the connection. */
+  /** Manually retry after the automatic attempts gave up ("failed"). */
+  reconnect(): void;
+  /** Close the connection (no further auto-reconnect). */
   close(): void;
 }
