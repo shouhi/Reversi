@@ -2,10 +2,23 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGetRoom } from "../lib/clientApi";
-import type { PublicPlayer, PublicRoomState } from "../types";
+import type { Phase, PublicPlayer, PublicRoomState } from "../types";
 
-/** Poll cadence for durable room/lobby state. Live play uses the realtime channel. */
-export const POLL_MS = 1200;
+/**
+ * Poll cadence for durable room/lobby state. It is PHASE-AWARE to cut Vercel
+ * Function load (the dominant cost): the lobby needs snappy roster/ready updates,
+ * but during the long active phases the countdown is derived from the server clock
+ * and catches arrive over the realtime channel, so the HTTP room only needs an
+ * occasional refresh. This roughly halves per-player GET volume across a round.
+ */
+export const LOBBY_POLL_MS = 1500;
+export const ACTIVE_POLL_MS = 3000;
+
+function pollInterval(phase: Phase | undefined): number {
+  return phase === "painting" || phase === "hiding" || phase === "seeking"
+    ? ACTIVE_POLL_MS
+    : LOBBY_POLL_MS;
+}
 
 export interface UseColorHideRoom {
   state: PublicRoomState | null;
@@ -33,11 +46,14 @@ export function useColorHideRoom(roomId: string): UseColorHideRoom {
 
   const pausedRef = useRef(false);
   const terminalRef = useRef(false);
+  /** Current phase, read by the poll loop to pick its cadence (no re-render). */
+  const phaseRef = useRef<Phase>("lobby");
   /** Last server clock sample + the client time we received it, for drift-free countdown. */
   const clockRef = useRef({ serverNow: 0, at: 0 });
 
   const applyState = useCallback((incoming: PublicRoomState) => {
     clockRef.current = { serverNow: incoming.serverNow, at: Date.now() };
+    phaseRef.current = incoming.phase;
     setState((prev) => {
       if (!prev || incoming.version >= prev.version) return incoming;
       return prev;
@@ -81,7 +97,9 @@ export function useColorHideRoom(roomId: string): UseColorHideRoom {
     const tick = async () => {
       if (!active) return;
       if (!pausedRef.current && !terminalRef.current) await refetch();
-      if (active && !terminalRef.current) timer = setTimeout(tick, POLL_MS);
+      if (active && !terminalRef.current) {
+        timer = setTimeout(tick, pollInterval(phaseRef.current));
+      }
     };
 
     terminalRef.current = false;

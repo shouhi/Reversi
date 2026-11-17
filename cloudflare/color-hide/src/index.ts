@@ -21,13 +21,26 @@ const worker = {
 
     const res = await routePartykitRequest(request, env, {
       onBeforeConnect(req: Request) {
+        // Kill switch: refuse NEW upgrades when realtime is disabled (operators
+        // flip COLOR_HIDE_REALTIME_ENABLED=0 to stop new connections fast).
+        const enabled = env.COLOR_HIDE_REALTIME_ENABLED;
+        if (enabled === "0" || enabled === "false") {
+          return new Response("realtime disabled", { status: 503 });
+        }
+        // Validate the room id from the path (/parties/color-hide/<roomId>) so a
+        // junk name can never spin up a Durable Object.
+        const parts = new URL(req.url).pathname.split("/").filter(Boolean);
+        const room = parts[2];
+        if (!room || !/^[a-z0-9]{6,64}$/.test(room)) {
+          return new Response("invalid room", { status: 400 });
+        }
+        // Origin allowlist (defense-in-depth vs cross-site WS; token auth is the
+        // real gate). Enforced only when configured AND the client sent an Origin.
         const allowed = (env.COLOR_HIDE_ALLOWED_ORIGINS ?? "")
           .split(",")
           .map((s: string) => s.trim())
           .filter(Boolean);
         const origin = req.headers.get("Origin");
-        // Enforce only when an allowlist is configured AND the client sent an
-        // Origin (browsers do; non-browser clients still need a valid token).
         if (allowed.length > 0 && origin && !allowed.includes(origin)) {
           return new Response("forbidden origin", { status: 403 });
         }

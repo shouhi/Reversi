@@ -281,3 +281,65 @@ bad token拒否 / 2人対戦（ロール・位置同期・情報漏洩なし・�
 `cloudflare/color-hide/README.md` 参照。デプロイ＝`wrangler secret put` ＋ `wrangler deploy`（本番var上書き）＋Vercelに
 `NEXT_PUBLIC_COLOR_HIDE_WS_URL`/`COLOR_HIDE_RT_SECRET` 設定。ロールバック＝**キルスイッチ**（Vercelの
 `NEXT_PUBLIC_COLOR_HIDE_WS_URL` を外す→ロビー/ペイント/結果はHTTPで継続、ライブ対戦のみ停止）／`wrangler rollback`／`wrangler delete`。
+
+---
+
+# Phase 4 — 本番公開前の最終監査（2026-11-17）
+
+**承認範囲：監査・必要な修正・テスト・リリース手順確定のみ。** 本番デプロイ／Cloudflare課金プラン変更／Vercel本番env変更／mainマージは**未実施**。
+
+## GitHub状態
+HEAD = PR #5 HEAD = `11a24a7`→（Phase4で更新）。`mergeable: MERGEABLE` / `mergeStateStatus: CLEAN`（**競合なし・判定完了**）。mainの3コミット先行、遅れなし。リポジトリCIワークフローは無し。VercelのPR**プレビュー**デプロイチェックはpass（プレビューであり本番ではない／`NEXT_PUBLIC_COLOR_HIDE_WS_URL`未設定なのでプレビューはRT未接続でロビー/ペイントのみ動作）。Draftのため自動マージされない（意図通り）。
+
+## コスト最適化（Vercel API呼び出し削減）
+
+- **DOのメタ取得**：`META_REFRESH_MS` を 1s→**2.5s** に（env `COLOR_HIDE_META_REFRESH_MS` で上書き可）。さらに**障害耐性**：取得失敗時は**直前のmetaを保持**（一時的なVercel障害でラウンドが停止しない）＋**指数バックオフ**（最大8倍）で障害時の負荷を抑制（単体テスト追加）。DOは**hiding/seeking中のみ接続**＝アクティブなので、ラウンド終了（RoundViewアンマウント）でポーリング自動停止。
+- **クライアントのポーリング**（こちらが支配的コスト）：フェーズ連動化。ロビー/準備/結果=1.5s、**painting/hiding/seeking=3s**（カウントダウンはサーバー時刻、捕獲はWS経由なので対戦中はHTTP頻度を落とせる）。1試合あたりのクライアントGETを**約50%削減**。
+- push型は見送り（過剰変更回避）。現状のlazy-tick＋低頻度ポーリングで十分安定・低コスト。フェーズ遷移はクライアント/DOいずれのGETでも進む（どちらか速い方）。
+
+## コスト試算（2026-11-17 公式料金・前提明記／launch前に要再確認）
+
+前提：6人/試合、1試合≈ラウンド+ロビーで約300秒アクティブ。最適化後の概算で、1試合あたり Vercel関数呼び出し ≈ **~1,000**、Upstashコマンド ≈ **~1,900**（各認証GETが get + lastSeen の CAS を伴うため）、Cloudflare課金リクエスト ≈ 1,626（受信WS 20:1、送信無料）。
+
+| 試合/月 | Cloudflare | Vercel Functions | Upstash Redis | **合計(概算)** |
+|---|---|---|---|---|
+| 100 | **$5**(基本) | 無料枠内(~0.1M<1M)※商用はPro | 無料枠内(~0.19M<0.5M) | **$5〜**（商用Pro併用で$25前後）|
+| 1,000 | **~$5** | ~1M＝Hobby上限際 → **Pro $20**基本でカバー | ~1.9M → PAYG **~$4** or 固定$10 | **~$30** |
+| 10,000 | **~$7** | ~10M：Hobbyは停止 → **Pro ~$20〜27**（呼び出し$6＋Active CPU数百円＋$20クレジット相殺）| ~19M → PAYG **~$38** | **~$65〜75** |
+
+- **区分**：Cloudflare=基本$5/月＋従量（帯域・保存なし）。Vercel=Hobby無料(1M呼び出し/1M CDN、超過は**課金ではなく一時停止**、商用不可)／Pro=$20/席＋$20クレジット＋従量（呼び出し$0.60/1M、Active CPUは実行中のみ・I/O待ち非課金、リージョン別$0.128〜0.221/CPU-hr）。Upstash=無料500K cmd/250MB/10GB、PAYG $0.20/100K cmd・保存$0.25/GB・帯域$0.03/GB（200GB無料）。
+- **支配的変動費＝ポーリング由来のVercel呼び出し＋Upstashコマンド**（上記最適化で約半減済み）。さらに削るなら lastSeen ハートビート頻度低減が次の一手（現状は将来対応）。
+- **予算管理**：Vercelは Spend Management（上限で一時停止・要確認）、Upstashは予算上限設定可、Cloudflareは**通知アラートのみ（ハード上限なし・要確認）**。異常トラフィックはアプリ側上限（6人/TTL/40msg/s/Origin/ルームID検証）＋Cloudflare自動DDoS＋必要時WAF。**課金操作は未実施。**
+
+## セキュリティ監査（本番Secret・接続）
+
+Phase 3の脅威モデル表に加え、本監査で確認・強化：
+- **本番Secret必須＋dev拒否**：DO（`ENVIRONMENT=production` かつ空/dev値→接続拒否）、アプリ `/catch`（`VERCEL_ENV=production` かつ空/dev→403 fail closed）。シークレット値はログ非出力（wranglerも "(hidden)"）。**実値は表示・記録・コミットしない。**
+- **追加硬化**：WorkerでルームID形式検証（`/^[a-z0-9]{6,64}$/`、不正→400でDO生成阻止）、Origin許可リスト（**E2Eで不正Origin拒否を検証**）、接続ごと40msg/s、1ルーム6接続上限、クロスルーム分離（1ルーム=1DO、hello.roomId≠this.name拒否）。
+- **本番で必要なenv（設定先）**：
+  - Cloudflare Worker：`COLOR_HIDE_RT_SECRET`(secret), `COLOR_HIDE_APP_URL`, `COLOR_HIDE_ALLOWED_ORIGINS`, `ENVIRONMENT=production`（任意 `COLOR_HIDE_REALTIME_ENABLED`, `COLOR_HIDE_META_REFRESH_MS`）。
+  - Vercel(本番)：`NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://<worker>`, `COLOR_HIDE_RT_SECRET`(同値), 既存 `KV_REST_API_*`/`UPSTASH_*`。フェーズタイマー上書きは**未設定**にする。
+
+## ロールバック / 緊急停止（実行可能ランブック）
+
+**重要**：`NEXT_PUBLIC_*` はビルド時にクライアントへ焼き込まれる。Vercel envの解除だけでは既存配信・既存タブは止まらない（再ビルド＋再デプロイが必要、既存タブはリロードまで旧URL）。即時停止はCloudflare側で行う：
+- **Tier1（秒・新規接続停止）**：`wrangler deploy --var COLOR_HIDE_REALTIME_ENABLED:0`（新規WS→503）。
+- **Tier2（秒・既存も切断）**：`wrangler rollback` / `wrangler delete`（DO退避で全切断→クライアントは再接続失敗→"RT未接続"、ロビー/ペイント/結果はHTTP継続）。
+- **Tier3（分・新規ページ配信停止）**：Vercelで `NEXT_PUBLIC_COLOR_HIDE_WS_URL` 解除＋再デプロイ。
+- DO障害＝永続データ無しのため位置情報のみ消失、ラウンドはアプリ権威のphase/rosterから継続。**Redis/Upstashは一切不変。** 詳細は `cloudflare/color-hide/README.md`。
+
+## 最終統合テスト（実workerd + 実WS）
+
+`npm run test:partyserver` — **9/9 pass**：bad token拒否 / **不正Origin拒否** / **7人目拒否** / 2人対戦（ロール・同期・情報漏洩なし・アンチテレポート・捕獲→鬼勝利）/ 時間切れ→隠れる側勝利 / 6人welcome / クロスルーム分離 / ペイント共有 / 再接続。
+ブラウザ実機確認（PC）：`NEXT_PUBLIC_COLOR_HIDE_WS_URL=ws://localhost:8787` でブラウザ→**Durable Objectにライブ接続**（Workerログ `101 Switching Protocols`、"RT未接続"なし、3Dシーン描画、コンソールエラー無し）。スマホ実機のFPS/タッチは未計測（実機必要・残課題）。
+
+## デプロイチェックリスト（順序・要承認）
+
+1. `wrangler login` → `wrangler whoami`（アカウント確認）。
+2. Workers **Paid($5/月〜)** 課金プラン確認（本番はHobby不可）。
+3. `wrangler secret put COLOR_HIDE_RT_SECRET`（強いランダム値）。
+4. `wrangler deploy --config cloudflare/color-hide/wrangler.toml --var ENVIRONMENT:production --var COLOR_HIDE_APP_URL:<vercel> --var COLOR_HIDE_ALLOWED_ORIGINS:<origin>`（初回で v1 SQLite migration 適用）。
+5. `curl https://<worker>/health` → `ok`。
+6. Vercel(本番)に `NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://<worker>` と `COLOR_HIDE_RT_SECRET`(同値) を設定、フェーズタイマー上書きを解除 → 再デプロイ。
+7. Vercel Spend Management / Upstash 予算上限 / Cloudflare 課金アラートを設定。
+8. 2ブラウザで実対戦スモーク → 問題時は上記ロールバックTier1/2。

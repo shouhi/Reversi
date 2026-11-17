@@ -31,6 +31,8 @@ Shared with the app (single source of truth, bundled by wrangler):
 | `COLOR_HIDE_RT_SECRET` | **wrangler secret** | yes (prod) | Shared with the app's `COLOR_HIDE_RT_SECRET`. MUST be a strong random value in prod; the DO **fails closed** if it is empty or the dev default when `ENVIRONMENT=production`. Never commit it. |
 | `COLOR_HIDE_ALLOWED_ORIGINS` | wrangler var | prod | Comma-separated Origins allowed to open a WS (e.g. `https://zen-gamebox.vercel.app`). Empty = allow any (dev only). |
 | `ENVIRONMENT` | wrangler var | yes | `development` \| `production`. Gates the secret requirement. |
+| `COLOR_HIDE_REALTIME_ENABLED` | wrangler var | no | Kill switch. Set to `0`/`false` + `wrangler deploy` to refuse **new** WS upgrades (503). |
+| `COLOR_HIDE_META_REFRESH_MS` | wrangler var | no | How often the DO re-reads room meta from the app (default 2500). Raise to cut Vercel load. |
 
 The Vercel app needs the **same** `COLOR_HIDE_RT_SECRET` and
 `NEXT_PUBLIC_COLOR_HIDE_WS_URL = wss://<your-worker-host>` (no path — the client
@@ -83,24 +85,42 @@ curl https://color-hide-realtime.<subdomain>.workers.dev/health   # → ok
 First deploy applies the `v1` SQLite migration (declares the DO class; we store no
 rows). The DO class name `ColorHide` ⇒ route namespace `color-hide`.
 
-## Rollback (DOCUMENTED ONLY)
+## Emergency stop / rollback (DOCUMENTED ONLY — runnable runbook)
 
+> **Critical reality:** `NEXT_PUBLIC_COLOR_HIDE_WS_URL` is **inlined into the client
+> bundle at build time**. Unsetting it in Vercel does **nothing** to already-served
+> pages until a **rebuild + redeploy**, and **browser tabs already open keep the old
+> URL until they reload**. So env-unset is NOT an instant kill switch. The instant
+> levers are at **Cloudflare** (they affect every client immediately).
+
+**Tier 1 — stop NEW connections fast (seconds, no data loss):**
 ```bash
-# A. Instantly disable realtime WITHOUT touching Cloudflare:
-#    In Vercel, UNSET NEXT_PUBLIC_COLOR_HIDE_WS_URL and redeploy. The client falls
-#    back to the local-host URL (unreachable in prod) → the lobby/paint/results still
-#    work (HTTP); only the live 3D round is affected. This is the safest kill-switch.
-
-# B. Roll the Worker back to a previous version:
-wrangler deployments list --config cloudflare/color-hide/wrangler.toml
-wrangler rollback [<version-id>] --config cloudflare/color-hide/wrangler.toml
-
-# C. Remove the Worker entirely (last resort):
-wrangler delete --config cloudflare/color-hide/wrangler.toml
+wrangler deploy --config cloudflare/color-hide/wrangler.toml --var COLOR_HIDE_REALTIME_ENABLED:0
+# New WS upgrades now get 503. Existing sockets stay until they drop (see Tier 2).
 ```
 
-Because the DO holds no durable data, rollback/redeploy loses nothing but
-in-flight live positions (clients reconnect; the app state is intact).
+**Tier 2 — also drop ALL existing connections (seconds):** roll back or remove the
+Worker. Durable Objects are evicted, every socket closes; clients auto-retry, fail,
+and show "RT未接続" while **lobby / paint / results keep working over HTTP**.
+```bash
+wrangler deployments list --config cloudflare/color-hide/wrangler.toml
+wrangler rollback [<version-id>] --config cloudflare/color-hide/wrangler.toml   # revert
+# or, last resort:
+wrangler delete --config cloudflare/color-hide/wrangler.toml                     # remove
+```
+
+**Tier 3 — stop NEW page loads from getting the realtime URL (minutes):** in Vercel
+unset `NEXT_PUBLIC_COLOR_HIDE_WS_URL` and **redeploy** (rebuild required). Existing
+tabs are unaffected until reload — use Tiers 1–2 for anything urgent.
+
+**Durable Object failure:** a DO stores no durable data, so a crash/eviction loses
+only in-flight positions; clients reconnect and the round continues from the app's
+authoritative phase/roster. **No Redis/Upstash data is ever touched by rollback** —
+the app + Upstash remain the source of truth throughout.
+
+**Client behaviour when realtime is down (verified):** `wsTransport` auto-reconnects
+with backoff; `RoundView` shows an "RT未接続" badge; the HUD countdown (server clock)
+and lobby/paint/result screens keep functioning over HTTP.
 
 ## Cost & abuse controls (verify current figures before launch)
 

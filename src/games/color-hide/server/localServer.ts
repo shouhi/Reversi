@@ -59,7 +59,8 @@ const out: Outbound = {
   },
 };
 
-const server = new ColorHideServer(provider, out);
+const metaRefreshMs = Number(process.env.COLOR_HIDE_META_REFRESH_MS) || undefined;
+const server = new ColorHideServer(provider, out, { metaRefreshMs });
 
 wss.on("connection", (ws) => {
   const connId = String(nextConnId++);

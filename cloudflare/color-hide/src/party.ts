@@ -38,6 +38,10 @@ export interface Env {
   COLOR_HIDE_ALLOWED_ORIGINS?: string;
   /** "production" | "development" — gates the secret requirement. */
   ENVIRONMENT?: string;
+  /** Optional override (ms) for how often the DO re-reads room meta from the app. */
+  COLOR_HIDE_META_REFRESH_MS?: string;
+  /** "0"/"false" → refuse new WS upgrades (kill switch; enforced in index.ts). */
+  COLOR_HIDE_REALTIME_ENABLED?: string;
 }
 
 interface RateState {
@@ -80,7 +84,8 @@ export class ColorHide extends Server<Env> {
         },
         close: (id) => this.conns.get(id)?.close(),
       };
-      this.game = new ColorHideServer(provider, out);
+      const metaRefreshMs = Number(this.env.COLOR_HIDE_META_REFRESH_MS) || undefined;
+      this.game = new ColorHideServer(provider, out, { metaRefreshMs });
     }
     return this.game;
   }

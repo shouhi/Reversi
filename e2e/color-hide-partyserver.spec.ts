@@ -39,7 +39,10 @@ test.beforeAll(async () => {
   host = spawn(
     `npx wrangler dev --config cloudflare/color-hide/wrangler.toml --port 8787 ` +
       `--var ENVIRONMENT:development --var COLOR_HIDE_APP_URL:${APP} ` +
-      `--var COLOR_HIDE_RT_SECRET:${RT_SECRET}`,
+      `--var COLOR_HIDE_RT_SECRET:${RT_SECRET} ` +
+      // An allowlist so the Origin check is active. Node ws clients send no Origin
+      // (→ allowed); the bad-Origin test sends a disallowed one (→ 403).
+      `--var COLOR_HIDE_ALLOWED_ORIGINS:${APP}`,
     { shell: true, env: { ...process.env }, stdio: "pipe" },
   );
   host.stderr?.on("data", (d) => {
@@ -185,6 +188,30 @@ test("bad token is rejected by the Durable Object", async ({ request }) => {
   expect(c.errors.join()).toMatch(/auth/i);
   expect(c.welcome).toBeUndefined();
   c.close();
+});
+
+test("a disallowed Origin is rejected before the WebSocket upgrade", async ({ request }) => {
+  const room = await createRoom(request, "H");
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(`${WS}/${room.roomId}`, { origin: "https://evil.example" });
+    ws.on("open", () => {
+      ws.close();
+      reject(new Error("disallowed Origin should not have connected"));
+    });
+    ws.on("unexpected-response", () => resolve());
+    ws.on("error", () => resolve()); // 403 upgrade surfaces as an error
+    setTimeout(() => reject(new Error("no response to bad-Origin upgrade")), 6000);
+  });
+});
+
+test("the 7th player is rejected (6-seat cap enforced by the app)", async ({ request }) => {
+  const h = await createRoom(request, "H");
+  for (let i = 2; i <= 6; i++) {
+    const j = await join(request, h.roomId, `P${i}`);
+    expect(j.status).toBe(200);
+  }
+  const seventh = await join(request, h.roomId, "P7");
+  expect(seventh.status).toBe(409);
 });
 
 test("2-player round over the DO: roles, sync, no info leak, anti-teleport, catch → win", async ({

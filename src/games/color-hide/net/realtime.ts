@@ -76,10 +76,19 @@ interface RoomRuntime {
   metaFetchedAt: number;
   /** playerId → live state. */
   live: Map<string, LivePlayer>;
+  /** Consecutive meta-fetch failures, for exponential backoff. */
+  metaFailures: number;
 }
 
-/** Meta is refreshed at most this often per room (ms). */
-const META_REFRESH_MS = 1_000;
+/**
+ * Default: refresh a room's durable meta from the app at most this often. Chosen
+ * at 2.5s to cut Vercel GET load vs the old 1s while keeping gameplay-relevant
+ * staleness small (phase progression is driven by the faster client polling + the
+ * app's lazy tick, not by this). Overridable per host via the constructor.
+ */
+const DEFAULT_META_REFRESH_MS = 2_500;
+/** Max backoff multiplier applied to the refresh interval after fetch failures. */
+const MAX_META_BACKOFF = 8;
 
 /** A fully-posed player, the input to the pure snapshot filter. */
 export interface PosedPlayer {
@@ -146,11 +155,18 @@ export function buildSnapshot(
 export class ColorHideServer {
   private rooms = new Map<string, RoomRuntime>();
   private conns = new Map<string, { roomId: string; playerId: string }>();
+  private readonly metaRefreshMs: number;
 
   constructor(
     private readonly provider: RoomMetaProvider,
     private readonly out: Outbound,
-  ) {}
+    options?: { metaRefreshMs?: number },
+  ) {
+    this.metaRefreshMs =
+      options?.metaRefreshMs && options.metaRefreshMs > 0
+        ? options.metaRefreshMs
+        : DEFAULT_META_REFRESH_MS;
+  }
 
   // -- connection lifecycle -------------------------------------------------
 
@@ -358,18 +374,32 @@ export class ColorHideServer {
   private ensureRoom(roomId: string): RoomRuntime {
     let room = this.rooms.get(roomId);
     if (!room) {
-      room = { meta: null, metaFetchedAt: 0, live: new Map() };
+      room = { meta: null, metaFetchedAt: 0, live: new Map(), metaFailures: 0 };
       this.rooms.set(roomId, room);
     }
     return room;
   }
 
-  /** Refreshes a room's cached meta if stale (or forced). */
+  /**
+   * Refreshes a room's cached meta if stale (or forced). Resilient to app
+   * outages: on a failed fetch it KEEPS the last-known meta (so a transient
+   * Vercel hiccup never stalls a live round) and backs off the retry interval
+   * exponentially to reduce load during an outage.
+   */
   async refreshMeta(roomId: string, now: number, force = false): Promise<void> {
     const room = this.ensureRoom(roomId);
-    if (!force && now - room.metaFetchedAt < META_REFRESH_MS) return;
+    const interval =
+      this.metaRefreshMs * Math.min(2 ** room.metaFailures, MAX_META_BACKOFF);
+    if (!force && now - room.metaFetchedAt < interval) return;
     room.metaFetchedAt = now;
-    room.meta = await this.provider.getMeta(roomId);
+    const meta = await this.provider.getMeta(roomId);
+    if (meta) {
+      room.meta = meta;
+      room.metaFailures = 0;
+    } else {
+      // Keep the last-known meta; just record the failure for backoff.
+      room.metaFailures += 1;
+    }
   }
 
   private roleOf(meta: RoomMeta, playerId: string): Role | null {

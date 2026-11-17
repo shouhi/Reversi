@@ -257,3 +257,36 @@ describe("ColorHideServer.tick (snapshot filtering end-to-end)", () => {
     expect(h.lastSnapshotIds("cA").sort()).toEqual(["A", "S"]);
   });
 });
+
+describe("ColorHideServer.refreshMeta resilience (app outage)", () => {
+  it("keeps the last-known meta when a meta fetch fails (round does not stall)", async () => {
+    const meta = makeMeta("seeking");
+    let fail = false;
+    const sent: Record<string, ServerMsg[]> = {};
+    const provider: RoomMetaProvider = {
+      async getMeta() {
+        return fail ? null : meta;
+      },
+      async persistCatch() {},
+    };
+    const out: Outbound = {
+      send(id, msg) {
+        (sent[id] ??= []).push(msg);
+      },
+      close() {},
+    };
+    const server = new ColorHideServer(provider, out);
+    await server.handleHello("cS", "r", "S", 0);
+    await server.handleHello("cA", "r", "A", 0);
+
+    // The app goes down; a forced refresh now returns null.
+    fail = true;
+    await server.refreshMeta("r", 10_000, true);
+
+    // A tick still produces a populated snapshot (meta was retained, not nulled).
+    server.tick(10_050);
+    const snap = (sent["cA"] ?? []).filter((m) => m.type === "snapshot").pop();
+    const ids = snap?.type === "snapshot" ? snap.players.map((p) => p.id) : [];
+    expect(ids).toContain("S"); // seeker still visible to the hider → meta retained
+  });
+});
