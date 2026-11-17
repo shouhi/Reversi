@@ -8,6 +8,7 @@
  */
 
 import type { Obstacle, Stage, World } from "../types";
+import { obstacleRect } from "./engine";
 import { BASE_GROUND_Y, CAMERA_LEAD, FALL_KILL_BELOW, VIEW_H } from "./constants";
 
 export interface Particle {
@@ -25,7 +26,10 @@ export interface RenderState {
   world: World;
   stage: Stage;
   particles: Particle[];
+  /** Cosmetic clock (lantern flicker etc.). */
   tSec: number;
+  /** Simulation time — drives deterministic moving-obstacle positions. */
+  elapsed: number;
   shakeX: number;
   shakeY: number;
 }
@@ -194,18 +198,59 @@ function drawGapPit(
 function drawObstacle(
   ctx: CanvasRenderingContext2D,
   o: Obstacle,
+  elapsed: number,
   tSec: number,
 ): void {
+  const r = obstacleRect(o, elapsed);
+  const x = r.x;
+  const y = r.y;
+  const w = r.w;
+  const h = r.h;
+
+  // motion guide for moving hazards — shows the travel range so the pattern is
+  // readable (difficulty from timing, not from poor visibility).
+  if (o.move) {
+    ctx.strokeStyle = "rgba(246,178,74,0.22)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath();
+    if (o.move.axis === "y") {
+      const cx = o.x + o.width / 2;
+      ctx.moveTo(cx, o.y - o.move.amplitude);
+      ctx.lineTo(cx, o.y + o.height + o.move.amplitude);
+    } else {
+      const cy = o.y + o.height / 2;
+      ctx.moveTo(o.x - o.move.amplitude, cy);
+      ctx.lineTo(o.x + o.width + o.move.amplitude, cy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (o.kind === "beam") {
+    ctx.fillStyle = C.woodDark;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = C.woodLight;
+    ctx.fillRect(x, y, w, 4);
+    ctx.fillStyle = "rgba(240,106,90,0.9)";
+    for (let sx = x + 6; sx < x + w - 10; sx += 22) {
+      ctx.beginPath();
+      ctx.moveTo(sx, y + 4);
+      ctx.lineTo(sx + 10, y + 4);
+      ctx.lineTo(sx + 4, y + h);
+      ctx.closePath();
+      ctx.fill();
+    }
+    return;
+  }
   if (o.kind === "bat") {
-    const cx = o.x + o.width / 2;
-    const cy = o.y + o.height / 2 + Math.sin(tSec * 6 + o.x) * 4;
+    const cx = x + w / 2;
+    const cy = y + h / 2 + Math.sin(tSec * 6 + o.x) * 2;
     const flap = Math.sin(tSec * 14 + o.x) * 0.5 + 0.5;
     ctx.fillStyle = C.bat;
-    // body
     ctx.beginPath();
     ctx.ellipse(cx, cy, 8, 9, 0, 0, Math.PI * 2);
     ctx.fill();
-    // wings
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.quadraticCurveTo(cx - 20, cy - 8 - flap * 8, cx - 26, cy + 6);
@@ -214,29 +259,28 @@ function drawObstacle(
     ctx.quadraticCurveTo(cx + 20, cy - 8 - flap * 8, cx + 26, cy + 6);
     ctx.quadraticCurveTo(cx + 14, cy + 2, cx, cy + 4);
     ctx.fill();
-    // eyes
     ctx.fillStyle = C.batEye;
     ctx.fillRect(cx - 4, cy - 2, 2, 2);
     ctx.fillRect(cx + 2, cy - 2, 2, 2);
     return;
   }
   if (o.kind === "spike") {
-    const n = Math.max(1, Math.round(o.width / 16));
-    const sw = o.width / n;
+    const n = Math.max(1, Math.round(w / 16));
+    const sw = w / n;
     for (let i = 0; i < n; i++) {
-      const sx = o.x + i * sw;
+      const sx = x + i * sw;
       ctx.fillStyle = C.spike;
       ctx.beginPath();
-      ctx.moveTo(sx, o.y + o.height);
-      ctx.lineTo(sx + sw / 2, o.y);
-      ctx.lineTo(sx + sw, o.y + o.height);
+      ctx.moveTo(sx, y + h);
+      ctx.lineTo(sx + sw / 2, y);
+      ctx.lineTo(sx + sw, y + h);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = C.spikeDark;
       ctx.beginPath();
-      ctx.moveTo(sx + sw / 2, o.y);
-      ctx.lineTo(sx + sw, o.y + o.height);
-      ctx.lineTo(sx + sw * 0.72, o.y + o.height);
+      ctx.moveTo(sx + sw / 2, y);
+      ctx.lineTo(sx + sw, y + h);
+      ctx.lineTo(sx + sw * 0.72, y + h);
       ctx.closePath();
       ctx.fill();
     }
@@ -244,26 +288,22 @@ function drawObstacle(
   }
   if (o.kind === "crate") {
     ctx.fillStyle = C.crate;
-    roundRect(ctx, o.x, o.y, o.width, o.height, 4);
+    roundRect(ctx, x, y, w, h, 4);
     ctx.fill();
     ctx.strokeStyle = C.crateDark;
     ctx.lineWidth = 4;
-    ctx.strokeRect(o.x + 2, o.y + 2, o.width - 4, o.height - 4);
+    ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
     ctx.beginPath();
-    ctx.moveTo(o.x + 3, o.y + 3);
-    ctx.lineTo(o.x + o.width - 3, o.y + o.height - 3);
-    ctx.moveTo(o.x + o.width - 3, o.y + 3);
-    ctx.lineTo(o.x + 3, o.y + o.height - 3);
+    ctx.moveTo(x + 3, y + 3);
+    ctx.lineTo(x + w - 3, y + h - 3);
+    ctx.moveTo(x + w - 3, y + 3);
+    ctx.lineTo(x + 3, y + h - 3);
     ctx.stroke();
     return;
   }
   // rock
   ctx.fillStyle = C.rock;
   ctx.beginPath();
-  const x = o.x;
-  const y = o.y;
-  const w = o.width;
-  const h = o.height;
   ctx.moveTo(x, y + h);
   ctx.lineTo(x + w * 0.1, y + h * 0.35);
   ctx.lineTo(x + w * 0.4, y + h * 0.05);
@@ -424,7 +464,7 @@ export function render(
     stage.baseGroundY;
   drawGoal(ctx, stage.goalX, goalGroundY);
 
-  for (const o of stage.obstacles) drawObstacle(ctx, o, state.tSec);
+  for (const o of stage.obstacles) drawObstacle(ctx, o, state.elapsed, state.tSec);
 
   // particles
   for (const p of state.particles) {

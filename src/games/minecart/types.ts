@@ -1,20 +1,15 @@
 /**
- * Shared types for the Minecart action game. Everything here is framework- and
- * canvas-agnostic so the simulation can be unit tested in isolation.
+ * Shared types for the Minecart action game. Framework/canvas-agnostic so the
+ * simulation can be unit tested and driven headlessly by the clearability solver.
  *
- * Coordinate system: world units (pixels at the design resolution), x increases
- * to the right, **y increases downward**. The cart auto-runs in +x; a camera
- * follows it. Physics run in world units and never depend on the display size.
+ * Coordinates: world units (design-resolution px), x right, **y down**. The cart
+ * auto-runs in +x at a constant speed; a camera follows it. Physics run in world
+ * units and never depend on display size.
  */
 
-export type Difficulty = "easy" | "normal" | "hard";
+export type Difficulty = "easy" | "normal" | "hard" | "expert";
 
-export type GameStatus =
-  | "ready" // stage loaded, waiting for the player to start
-  | "running"
-  | "paused"
-  | "dead"
-  | "cleared";
+export type GameStatus = "ready" | "running" | "paused" | "dead" | "cleared";
 
 /** A solid, flat ground segment (a stretch of rail). Top surface sits at `y`. */
 export interface Platform {
@@ -24,20 +19,35 @@ export interface Platform {
 }
 
 export type ObstacleKind =
-  /** Ground hazards sitting on the rail — jump OVER them. */
+  /** Ground hazards on the rail — jump OVER them. */
   | "rock"
   | "crate"
   | "spike"
-  /** Overhead hazard floating above solid ground — pass UNDER it (don't jump). */
-  | "bat";
+  /** Overhead floating hazard — do NOT jump into it (stay low / pass under). */
+  | "bat"
+  /** Wide overhead beam — a "stay grounded" zone; jumping under it is fatal. */
+  | "beam";
 
-/** An axis-aligned hazard box. (x,y) is the top-left corner. */
+/** Deterministic periodic motion for an obstacle (predictable, replayable). */
+export interface MoveSpec {
+  axis: "x" | "y";
+  /** Peak displacement from the base position (world px). */
+  amplitude: number;
+  /** Seconds for one full oscillation. */
+  period: number;
+  /** Phase offset in radians (default 0) — fixes the starting position. */
+  phase?: number;
+}
+
+/** An axis-aligned hazard box. (x,y) is the top-left corner (base position). */
 export interface Obstacle {
   kind: ObstacleKind;
   x: number;
   y: number;
   width: number;
   height: number;
+  /** When present, the obstacle oscillates deterministically from (x,y). */
+  move?: MoveSpec;
 }
 
 export interface Stage {
@@ -46,38 +56,35 @@ export interface Stage {
   difficulty: Difficulty;
   /** Horizontal run speed in world px/s. */
   speed: number;
-  /** Cart's starting left-edge x. */
   startX: number;
   /** Clearing the stage once the cart's center reaches this x. */
   goalX: number;
-  /** Base ground top (the default rail height); falling well below this = death. */
+  /** Base ground top; falling well below this = death. */
   baseGroundY: number;
   platforms: Platform[];
   obstacles: Obstacle[];
 }
 
+export type DeathCause = "fall" | "crash" | "overhead";
+
 /** The mutable simulation state for one play attempt. */
 export interface World {
   stageId: string;
   status: GameStatus;
-  /** Cart axis-aligned box: (x,y) top-left, in world units. */
   cartX: number;
   cartY: number;
   cartW: number;
   cartH: number;
-  /** Vertical velocity (px/s), positive = downward. */
   vy: number;
   onGround: boolean;
-  /** Seconds since the cart started running (the clear time). */
   elapsed: number;
-  /** Remaining coyote-time / jump-buffer windows (seconds). */
   coyote: number;
   jumpBuffer: number;
-  /** Accumulated wheel rotation (radians) for rendering. */
   wheelAngle: number;
+  /** Why the run ended (set on death), else null. */
+  deathCause: DeathCause | null;
 }
 
-/** Discrete events produced by a single fixed simulation step. */
 export interface StepEvents {
   jumped: boolean;
   landed: boolean;
@@ -85,15 +92,15 @@ export interface StepEvents {
   cleared: boolean;
 }
 
-/** Persisted progress (localStorage). */
+/** Persisted progress (localStorage). v2 adds EXPERT + furthest-reach tracking. */
 export interface MinecartProgress {
   version: number;
   /** Number of unlocked stages (by linear order); stage[i] unlocked if i < unlocked. */
   unlocked: number;
-  /** Stage ids the player has cleared. */
   cleared: string[];
-  /** Best clear time per stage id, in milliseconds. */
+  /** Best clear time per stage id (ms). */
   bestMs: Record<string, number>;
-  /** Sound on/off. */
+  /** Furthest progress fraction (0..1) reached per stage id. */
+  bestReach: Record<string, number>;
   sound: boolean;
 }

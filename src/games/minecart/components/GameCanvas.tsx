@@ -1,13 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GameStatus, Stage } from "../types";
+import type { DeathCause, GameStatus, Stage } from "../types";
 import { useMinecartGame } from "../hooks/useMinecartGame";
 import { SoundEngine } from "../lib/sound";
 
 function fmt(ms: number | undefined): string {
   if (ms === undefined) return "--.--";
   return (ms / 1000).toFixed(2);
+}
+
+function causeLabel(cause: DeathCause | null): string {
+  switch (cause) {
+    case "fall":
+      return "線路から落下（ジャンプが届かなかった / 遅かった）";
+    case "crash":
+      return "障害物に衝突した";
+    case "overhead":
+      return "上の障害物に衝突（跳びすぎ）";
+    default:
+      return "もう一度挑戦しよう";
+  }
 }
 
 const DIFF_LABEL: Record<string, string> = {
@@ -21,8 +34,10 @@ export default function GameCanvas({
   stageIndex,
   totalStages,
   soundOn,
+  bestReach,
   onToggleSound,
   onClear,
+  onReach,
   onExit,
   onNext,
   hasNext,
@@ -31,8 +46,10 @@ export default function GameCanvas({
   stageIndex: number;
   totalStages: number;
   soundOn: boolean;
+  bestReach: number;
   onToggleSound: (on: boolean) => void;
   onClear: (timeMs: number) => void;
+  onReach: (reach: number) => void;
   onExit: () => void;
   onNext: () => void;
   hasNext: boolean;
@@ -43,6 +60,8 @@ export default function GameCanvas({
 
   const [status, setStatus] = useState<GameStatus>("ready");
   const [lastTimeMs, setLastTimeMs] = useState<number | undefined>(undefined);
+  const [lastCause, setLastCause] = useState<DeathCause | null>(null);
+  const [lastReach, setLastReach] = useState(0);
 
   // One sound engine per mount; keep its muted flag in sync.
   const sound = useMemo(() => new SoundEngine(!soundOn), []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -63,8 +82,12 @@ export default function GameCanvas({
         setLastTimeMs(meta.timeMs);
         onClear(meta.timeMs);
       }
-      if (s === "dead" && meta?.timeMs !== undefined) {
-        setLastTimeMs(meta.timeMs);
+      if (s === "dead") {
+        if (meta?.timeMs !== undefined) setLastTimeMs(meta.timeMs);
+        setLastCause(meta?.cause ?? null);
+        const reach = meta?.reach ?? 0;
+        setLastReach(reach);
+        onReach(reach);
       }
     },
   });
@@ -154,7 +177,21 @@ export default function GameCanvas({
             <h2 className="text-2xl font-bold text-red-400" data-testid="fail-title">
               ミス！
             </h2>
-            <p className="mt-1 text-sm text-muted">もう一度挑戦しよう</p>
+            <p className="mt-1 text-sm text-amber-300">{causeLabel(lastCause)}</p>
+            <p className="mt-2 text-xs text-muted">
+              到達{" "}
+              <span className="font-mono text-ink">
+                {Math.round(lastReach * 100)}%
+              </span>
+              {bestReach > lastReach && (
+                <span className="ml-2">
+                  ベスト{" "}
+                  <span className="font-mono text-accent">
+                    {Math.round(bestReach * 100)}%
+                  </span>
+                </span>
+              )}
+            </p>
             <div className="mt-5 flex flex-col gap-2">
               <button
                 type="button"

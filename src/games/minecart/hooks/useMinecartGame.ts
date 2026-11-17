@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type RefObject } from "react";
-import type { GameStatus, Stage, World } from "../types";
+import type { DeathCause, GameStatus, Stage, World } from "../types";
 import { createWorld, stepFixed } from "../lib/engine";
 import { FIXED_DT, MAX_FRAME_DT } from "../lib/constants";
 import { render, type Particle } from "../lib/renderer";
@@ -20,7 +20,10 @@ interface Opts {
   progressRef: RefObject<HTMLElement | null>;
   stage: Stage;
   sound: SoundEngine;
-  onStatus: (s: GameStatus, meta?: { timeMs?: number }) => void;
+  onStatus: (
+    s: GameStatus,
+    meta?: { timeMs?: number; cause?: DeathCause | null; reach?: number },
+  ) => void;
 }
 
 interface GameRef {
@@ -178,11 +181,17 @@ export function useMinecartGame(opts: Opts): MinecartControls {
             spawn(game.particles, w.cartX + w.cartW * 0.3, w.cartY + w.cartH, 6, ["#b9a06a", "#8a6f3e"], 120, 120);
           }
           if (ev.died) {
-            const fell = w.cartY + w.cartH > stage.baseGroundY + 120;
+            const fell = w.deathCause === "fall";
             soundRef.current.play(fell ? "fall" : "crash");
             game.shakeMag = fell ? 6 : 14;
             spawn(game.particles, w.cartX + w.cartW / 2, w.cartY + w.cartH / 2, 22, ["#caa15a", "#8a5a2c", "#e06a5a"], 360, 320);
-            onStatusRef.current("dead", { timeMs: Math.round(w.elapsed * 1000) });
+            const reach =
+              (w.cartX - stage.startX) / (stage.goalX - stage.startX);
+            onStatusRef.current("dead", {
+              timeMs: Math.round(w.elapsed * 1000),
+              cause: w.deathCause,
+              reach: Math.max(0, Math.min(1, reach)),
+            });
             break;
           }
           if (ev.cleared) {
@@ -216,6 +225,7 @@ export function useMinecartGame(opts: Opts): MinecartControls {
         stage,
         particles: game.particles,
         tSec: game.tSec,
+        elapsed: w.elapsed,
         shakeX: game.shakeX,
         shakeY: game.shakeY,
       });
