@@ -31,6 +31,14 @@ export default defineConfig({
     timeout: 180_000,
     env: {
       REVERSI_MEMORY_STORE: "1",
+      // Short COLOR HIDE phase timers so the realtime E2E can play a full round
+      // in ~15s instead of ~95s. Clients always use the server-sent durations, so
+      // this only affects test speed, never production behaviour.
+      COLOR_HIDE_PREPARING_MS: "4000",
+      COLOR_HIDE_PAINTING_MS: "4000",
+      COLOR_HIDE_HIDING_MS: "2000",
+      COLOR_HIDE_SEEKING_MS: "6000",
+      COLOR_HIDE_RESULT_MS: "3000",
     },
   },
 });

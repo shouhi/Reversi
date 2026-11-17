@@ -23,18 +23,30 @@ export const MAX_PLAYERS = 6;
 // ---------------------------------------------------------------------------
 
 /**
+ * Phase durations can be overridden per-deployment via env vars (handy for E2E,
+ * which can't wait minutes per round). Overrides are read on the SERVER only; the
+ * client always renders the duration the server sends in PublicRoomState, so
+ * production behaviour is unchanged whether or not an override is set.
+ */
+function envMs(name: string, def: number): number {
+  const raw = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  const n = raw != null && raw !== "" ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+/**
  * Short role-reveal + map-load window after the host starts a round. The seeker
  * learns they are "it"; hiders learn the map. No movement yet.
  */
-export const PREPARING_MS = 5_000;
+export const PREPARING_MS = envMs("COLOR_HIDE_PREPARING_MS", 5_000);
 /** Hiders paint their character. Seeker waits (blind). */
-export const PAINTING_MS = 60_000;
+export const PAINTING_MS = envMs("COLOR_HIDE_PAINTING_MS", 60_000);
 /** Hiders move and hide. Seeker is frozen and cannot see the map. */
-export const HIDING_MS = 30_000;
+export const HIDING_MS = envMs("COLOR_HIDE_HIDING_MS", 30_000);
 /** Seeker hunts. Round ends early if every hider is caught. */
-export const SEEKING_MS = 180_000;
+export const SEEKING_MS = envMs("COLOR_HIDE_SEEKING_MS", 180_000);
 /** How long the result screen lingers before the room may auto-return to lobby. */
-export const RESULT_MS = 20_000;
+export const RESULT_MS = envMs("COLOR_HIDE_RESULT_MS", 20_000);
 
 /** Convenience map of each timed phase's duration, for the timer/HUD + server. */
 export const PHASE_DURATION_MS = {

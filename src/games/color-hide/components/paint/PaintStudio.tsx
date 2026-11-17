@@ -5,6 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, ContactShadows } from "@react-three/drei";
 import Character from "../three/Character";
 import { PaintEngine } from "./PaintEngine";
+import { detectQuality, dprFor } from "../../lib/quality";
 
 /**
  * The character paint studio. Rotate the body and paint directly on its surface
@@ -46,6 +47,7 @@ export default function PaintStudio({
   const [mode, setMode] = useState<"paint" | "rotate">("paint");
   const [spin, setSpin] = useState(0);
   const [, setUndoTick] = useState(0);
+  const [quality] = useState(detectQuality);
   const painting = useRef(false);
 
   // Create the paint engine only on the client (it touches `document`).
@@ -119,7 +121,7 @@ export default function PaintStudio({
             {mode === "paint" ? "🖌 塗る" : "🔄 回す"}
           </button>
         </div>
-        <Canvas shadows camera={{ position: [0, 1.4, 4], fov: 40 }} dpr={[1, 2]}>
+        <Canvas shadows camera={{ position: [0, 1.4, 4], fov: 40 }} dpr={dprFor(quality)}>
           <color attach="background" args={["#0e1013"]} />
           <ambientLight intensity={0.7} />
           <directionalLight position={[3, 6, 4]} intensity={1.1} castShadow />

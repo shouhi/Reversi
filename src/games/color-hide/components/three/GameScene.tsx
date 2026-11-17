@@ -10,6 +10,7 @@ import type { RealtimeTransport } from "../../net/transport";
 import { getMap } from "../../lib/maps";
 import { resolveMove } from "../../lib/movement";
 import { segmentIntersectsAabb } from "../../lib/geometry";
+import { detectQuality, dprFor, shadowsFor } from "../../lib/quality";
 import {
   CROUCH_SPEED_MULT,
   RUN_SPEED,
@@ -67,6 +68,7 @@ export default function GameScene(props: GameSceneProps) {
   const [touch] = useState(
     () => typeof window !== "undefined" && "ontouchstart" in window,
   );
+  const [quality] = useState(detectQuality);
   const [poseLabel, setPoseLabel] = useState<Pose>("stand");
 
   // Live snapshot (visibility-filtered by the server) + caught set, updated from
@@ -159,7 +161,11 @@ export default function GameScene(props: GameSceneProps) {
       onPointerUp={endDrag}
       onPointerLeave={endDrag}
     >
-      <Canvas shadows camera={{ fov: 60, near: 0.1, far: 120 }} dpr={[1, 2]}>
+      <Canvas
+        shadows={shadowsFor(quality)}
+        camera={{ fov: 60, near: 0.1, far: 120 }}
+        dpr={dprFor(quality)}
+      >
         <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} />
       </Canvas>
 

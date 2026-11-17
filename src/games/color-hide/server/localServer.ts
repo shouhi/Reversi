@@ -16,6 +16,7 @@
  * COLOR_HIDE_RT_SECRET (dev default).
  */
 
+import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   ColorHideServer,
@@ -97,7 +98,18 @@ async function authenticate(
   }
 }
 
-const wss = new WebSocketServer({ port: PORT });
+// A tiny HTTP server shares the port so tooling (and Playwright) can health-check
+// readiness; the WebSocket server is attached to it.
+const httpServer = createServer((req, res) => {
+  if (req.method === "GET" && (req.url === "/health" || req.url === "/")) {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("ok");
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+const wss = new WebSocketServer({ server: httpServer });
 const sockets = new Map<string, WebSocket>();
 const activeRooms = new Set<string>();
 let nextConnId = 1;
@@ -170,6 +182,9 @@ function safeParse(s: string): unknown {
   }
 }
 
-console.log(
-  `[color-hide] realtime host listening on ws://localhost:${PORT} (app: ${APP_URL}, tick: ${NET_TICK_HZ}Hz)`,
-);
+httpServer.listen(PORT, () => {
+  console.log(
+    `[color-hide] realtime host listening on ws://localhost:${PORT} ` +
+      `(health: http://localhost:${PORT}/health, app: ${APP_URL}, tick: ${NET_TICK_HZ}Hz)`,
+  );
+});
