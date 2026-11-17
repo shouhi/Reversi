@@ -10,7 +10,8 @@ import type { RealtimeTransport } from "../../net/transport";
 import { getMap } from "../../lib/maps";
 import { resolveMove } from "../../lib/movement";
 import { segmentIntersectsAabb } from "../../lib/geometry";
-import { detectQuality, dprFor, shadowsFor } from "../../lib/quality";
+import { detectQuality, dprFor, shadowsFor, type Quality } from "../../lib/quality";
+import { clampLookDelta } from "../../lib/touchInput";
 import {
   CROUCH_SPEED_MULT,
   RUN_SPEED,
@@ -134,22 +135,30 @@ export default function GameScene(props: GameSceneProps) {
     input.current.poseIndex = (input.current.poseIndex + 1) % POSES.length;
     setPoseLabel(POSES[input.current.poseIndex]);
   };
+  const crouchBtn = () => {
+    input.current.poseIndex = input.current.poseIndex === 1 ? 0 : 1;
+    setPoseLabel(POSES[input.current.poseIndex]);
+  };
 
-  // Pointer-drag look (desktop + touch on the viewport).
-  const dragging = useRef(false);
+  // Pointer-drag look (desktop + touch). Tracks ONE pointer so a second finger on
+  // the virtual stick / buttons (which stopPropagation) never rotates the camera;
+  // per-event deltas are clamped so a big jump can't whip the view.
+  const lookPointer = useRef<number | null>(null);
   const lastPtr = useRef({ x: 0, y: 0 });
+  const MAX_LOOK_STEP = 80;
   const onPointerDown = (e: React.PointerEvent) => {
-    dragging.current = true;
+    if (lookPointer.current !== null) return;
+    lookPointer.current = e.pointerId;
     lastPtr.current = { x: e.clientX, y: e.clientY };
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragging.current) return;
-    input.current.look.dx += e.clientX - lastPtr.current.x;
-    input.current.look.dy += e.clientY - lastPtr.current.y;
+    if (e.pointerId !== lookPointer.current) return;
+    input.current.look.dx += clampLookDelta(e.clientX - lastPtr.current.x, MAX_LOOK_STEP);
+    input.current.look.dy += clampLookDelta(e.clientY - lastPtr.current.y, MAX_LOOK_STEP);
     lastPtr.current = { x: e.clientX, y: e.clientY };
   };
-  const endDrag = () => {
-    dragging.current = false;
+  const endDrag = (e: React.PointerEvent) => {
+    if (e.pointerId === lookPointer.current) lookPointer.current = null;
   };
 
   return (
@@ -160,13 +169,14 @@ export default function GameScene(props: GameSceneProps) {
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerLeave={endDrag}
+      onPointerCancel={endDrag}
     >
       <Canvas
         shadows={shadowsFor(quality)}
         camera={{ fov: 60, near: 0.1, far: 120 }}
         dpr={dprFor(quality)}
       >
-        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} />
+        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} />
       </Canvas>
 
       {/* Crosshair for the seeker */}
@@ -203,6 +213,7 @@ export default function GameScene(props: GameSceneProps) {
           input={input}
           isSeeker={props.myRole === "seeker"}
           onPoseCycle={cyclePoseBtn}
+          onCrouch={crouchBtn}
         />
       )}
     </div>
@@ -217,6 +228,7 @@ interface ContentsProps extends GameSceneProps {
   input: React.MutableRefObject<GameInput>;
   snapshot: React.MutableRefObject<Map<string, NetPlayer>>;
   caught: Set<string>;
+  quality: Quality;
 }
 
 function SceneContents({
@@ -231,6 +243,7 @@ function SceneContents({
   input,
   snapshot,
   caught,
+  quality,
 }: ContentsProps) {
   const map = useMemo(() => getMap(mapId), [mapId]);
   const myTexture = useMemo(() => textureForPaint(paints[myId]), [paints, myId]);
@@ -338,7 +351,7 @@ function SceneContents({
 
   return (
     <>
-      <MapScene mapId={mapId} />
+      <MapScene mapId={mapId} quality={quality} />
       <group ref={localGroup}>
         <group ref={poseGroup}>
           <Character texture={myTexture} />
@@ -401,22 +414,41 @@ function RemotePlayer({
 }) {
   const group = useRef<THREE.Group>(null);
   const pose = useRef<THREE.Group>(null);
+  // A player is rendered ONLY while present in the current (server-filtered)
+  // snapshot. `<Html>` labels ignore group.visible, so we must conditionally
+  // MOUNT the whole subtree — otherwise a roster member who hasn't opened the 3D
+  // view (or has disconnected) would show a stale name at the origin. Presence is
+  // state (flips rarely), so no per-frame re-render.
+  const [present, setPresent] = useState(false);
+  const presentRef = useRef(false);
+  const freshRef = useRef(true);
+
   useFrame(() => {
-    const g = group.current;
-    if (!g) return;
     const net = snapshot.current.get(entry.id);
-    if (!net) {
-      g.visible = false;
-      return;
+    const isPresent = !!net;
+    if (isPresent !== presentRef.current) {
+      presentRef.current = isPresent;
+      if (isPresent) freshRef.current = true; // snap on (re)appearance
+      setPresent(isPresent);
     }
-    g.visible = true;
-    g.position.x += (net.x - g.position.x) * 0.25;
-    g.position.z += (net.z - g.position.z) * 0.25;
+    const g = group.current;
+    if (!net || !g) return;
+    if (freshRef.current) {
+      // First frame after (re)appearing: snap to the real position, never lerp
+      // in from the origin.
+      g.position.set(net.x, 0, net.z);
+      freshRef.current = false;
+    } else {
+      g.position.x += (net.x - g.position.x) * 0.25;
+      g.position.z += (net.z - g.position.z) * 0.25;
+    }
     g.rotation.y = net.yaw;
     if (pose.current) applyPoseVisual(pose.current, net.pose);
   });
+
+  if (!present) return null; // not in the snapshot → no mesh AND no name label
   return (
-    <group ref={group} visible={false}>
+    <group ref={group}>
       <group ref={pose}>
         <Character texture={texture} />
       </group>

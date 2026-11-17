@@ -10,11 +10,37 @@
  */
 
 export type Quality = "high" | "low";
+/** User preference: "auto" lets the heuristic decide; "high"/"low" force a tier. */
+export type QualityPref = Quality | "auto";
+
+const QUALITY_KEY = "color-hide:quality";
+
+/** The stored preference (defaults to "auto"). */
+export function getQualityPref(): QualityPref {
+  if (typeof window === "undefined") return "auto";
+  try {
+    const o = window.localStorage.getItem(QUALITY_KEY);
+    return o === "high" || o === "low" ? o : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+/** Persists the preference ("auto" clears the override so the heuristic runs). */
+export function setQualityPref(p: QualityPref): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (p === "auto") window.localStorage.removeItem(QUALITY_KEY);
+    else window.localStorage.setItem(QUALITY_KEY, p);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function detectQuality(): Quality {
   if (typeof window === "undefined") return "high";
   try {
-    const override = window.localStorage.getItem("color-hide:quality");
+    const override = window.localStorage.getItem(QUALITY_KEY);
     if (override === "high" || override === "low") return override;
   } catch {
     /* localStorage unavailable → fall through to heuristic */

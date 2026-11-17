@@ -2,47 +2,72 @@
 
 import { useRef } from "react";
 import type { GameInput } from "./three/GameScene";
+import { knobOffset, stickVector } from "../lib/touchInput";
 
 /**
  * Touch controls: a left virtual stick for movement and right-side action buttons.
  * They write straight into the shared {@link GameInput} ref the scene reads each
- * frame, so there is no per-touch React re-render. `touch-action: none` on the
- * stick stops the page from scrolling under a thumb.
+ * frame (no per-touch React re-render), and `stopPropagation` so a thumb on a
+ * control never also drives the camera look-drag. `touch-action: none` stops the
+ * page scrolling under a thumb.
  */
 export default function MobileControls({
   input,
   isSeeker,
   onPoseCycle,
+  onCrouch,
 }: {
   input: React.MutableRefObject<GameInput>;
   isSeeker: boolean;
   onPoseCycle: () => void;
+  onCrouch: () => void;
 }) {
   const baseRef = useRef<HTMLDivElement>(null);
+  const knobRef = useRef<HTMLDivElement>(null);
   const activeId = useRef<number | null>(null);
+  const RADIUS = 46;
 
   const updateStick = (clientX: number, clientY: number) => {
     const base = baseRef.current;
     if (!base) return;
-    const r = base.getBoundingClientRect();
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
-    let dx = (clientX - cx) / (r.width / 2);
-    let dy = (clientY - cy) / (r.height / 2);
-    const len = Math.hypot(dx, dy);
-    if (len > 1) {
-      dx /= len;
-      dy /= len;
+    const v = stickVector(clientX, clientY, base.getBoundingClientRect());
+    input.current.move.x = v.x;
+    input.current.move.y = v.y;
+    if (knobRef.current) {
+      const o = knobOffset(v, RADIUS);
+      knobRef.current.style.transform = `translate(calc(-50% + ${o.x}px), calc(-50% + ${o.y}px))`;
     }
-    input.current.move.x = dx;
-    input.current.move.y = -dy; // screen-up = forward
   };
 
   const resetStick = () => {
     input.current.move.x = 0;
     input.current.move.y = 0;
     activeId.current = null;
+    if (knobRef.current) knobRef.current.style.transform = "translate(-50%, -50%)";
   };
+
+  // Common handler set for action buttons: never let a tap also rotate the camera.
+  const hold = (on: () => void, off?: () => void) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      e.stopPropagation();
+      on();
+    },
+    onPointerUp: off
+      ? (e: React.PointerEvent) => {
+          e.stopPropagation();
+          off();
+        }
+      : undefined,
+    onPointerCancel: off
+      ? (e: React.PointerEvent) => {
+          e.stopPropagation();
+          off();
+        }
+      : undefined,
+  });
+
+  const btn =
+    "flex items-center justify-center rounded-full bg-white/15 font-semibold text-white ring-1 ring-white/20 active:bg-white/30 select-none";
 
   return (
     <>
@@ -50,8 +75,9 @@ export default function MobileControls({
       <div
         ref={baseRef}
         onPointerDown={(e) => {
+          e.stopPropagation();
           activeId.current = e.pointerId;
-          (e.target as HTMLElement).setPointerCapture(e.pointerId);
+          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
           updateStick(e.clientX, e.clientY);
         }}
         onPointerMove={(e) => {
@@ -59,60 +85,56 @@ export default function MobileControls({
         }}
         onPointerUp={resetStick}
         onPointerCancel={resetStick}
-        className="absolute bottom-6 left-6 h-28 w-28 rounded-full border border-white/20 bg-white/5"
+        className="absolute bottom-6 left-6 h-32 w-32 rounded-full border border-white/20 bg-white/5"
         style={{ touchAction: "none" }}
         aria-label="移動スティック"
       >
-        <div className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/25" />
+        <div
+          ref={knobRef}
+          className="pointer-events-none absolute left-1/2 top-1/2 h-12 w-12 rounded-full bg-white/30"
+          style={{ transform: "translate(-50%, -50%)" }}
+        />
       </div>
 
       {/* Action buttons (bottom-right) */}
-      <div className="absolute bottom-6 right-6 flex flex-col items-end gap-2" style={{ touchAction: "none" }}>
+      <div
+        className="absolute bottom-6 right-6 flex flex-col items-end gap-3"
+        style={{ touchAction: "none" }}
+      >
         {isSeeker ? (
           <button
             type="button"
-            onPointerDown={() => {
+            {...hold(() => {
               input.current.catchReq = true;
-            }}
-            className="h-16 w-16 rounded-full bg-amber-500 text-sm font-bold text-black"
+            })}
+            className={`${btn} h-20 w-20 bg-amber-500 text-sm text-black ring-amber-300`}
           >
             捕まえる
           </button>
         ) : (
-          <button
-            type="button"
-            onPointerDown={() => onPoseCycle()}
-            className="h-14 w-14 rounded-full bg-white/15 text-xs font-semibold text-white"
-          >
-            ポーズ
-          </button>
-        )}
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onPointerDown={() => {
-              input.current.running = true;
-            }}
-            onPointerUp={() => {
-              input.current.running = false;
-            }}
-            onPointerCancel={() => {
-              input.current.running = false;
-            }}
-            className="h-12 w-12 rounded-full bg-white/15 text-xs font-semibold text-white"
-          >
-            走る
-          </button>
-          {isSeeker ? (
-            <button
-              type="button"
-              onPointerDown={() => onPoseCycle()}
-              className="h-12 w-12 rounded-full bg-white/15 text-xs font-semibold text-white"
-            >
+          <div className="flex gap-3">
+            <button type="button" {...hold(onCrouch)} className={`${btn} h-14 w-14 text-xs`}>
+              しゃがむ
+            </button>
+            <button type="button" {...hold(onPoseCycle)} className={`${btn} h-14 w-14 text-xs`}>
               ポーズ
             </button>
-          ) : null}
-        </div>
+          </div>
+        )}
+        <button
+          type="button"
+          {...hold(
+            () => {
+              input.current.running = true;
+            },
+            () => {
+              input.current.running = false;
+            },
+          )}
+          className={`${btn} h-14 w-14 text-xs`}
+        >
+          走る
+        </button>
       </div>
     </>
   );

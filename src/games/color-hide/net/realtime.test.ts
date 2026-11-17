@@ -290,3 +290,23 @@ describe("ColorHideServer.refreshMeta resilience (app outage)", () => {
     expect(ids).toContain("S"); // seeker still visible to the hider → meta retained
   });
 });
+
+describe("P0-1: roster-only (non-connected) players are never in a snapshot", () => {
+  it("omits a roster hider that has no live connection", async () => {
+    const meta = makeMeta("seeking"); // players S (seeker) + A (hider)
+    const sent: Record<string, ServerMsg[]> = {};
+    const provider: RoomMetaProvider = { async getMeta() { return meta; }, async persistCatch() {} };
+    const out: Outbound = {
+      send(id, msg) { (sent[id] ??= []).push(msg); },
+      close() {},
+    };
+    const server = new ColorHideServer(provider, out);
+    // Only the seeker connects; hider "A" is on the roster but never opened a client.
+    await server.handleHello("cS", "r", "S", 0);
+    server.tick(100);
+    const snap = (sent["cS"] ?? []).filter((m) => m.type === "snapshot").pop();
+    const ids = snap?.type === "snapshot" ? snap.players.map((p) => p.id) : [];
+    expect(ids).toEqual(["S"]); // only the connected seeker; roster-only "A" absent
+    expect(ids).not.toContain("A");
+  });
+});

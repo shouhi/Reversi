@@ -1,6 +1,16 @@
-import type { InputState, RealtimeTransport } from "./transport";
+import type {
+  ConnectionStatus,
+  InputState,
+  RealtimeTransport,
+} from "./transport";
 import type { ClientMsg, ServerMsg } from "./protocol";
 import { PARTY_NAME } from "../lib/realtimeShared";
+
+/** Give up auto-reconnecting after this many consecutive failed attempts. */
+const MAX_RECONNECT_ATTEMPTS = 8;
+/** Exponential backoff base/cap (ms). */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 8000;
 
 /**
  * WebSocket implementation of {@link RealtimeTransport}, pointed at the local WS
@@ -40,18 +50,33 @@ export function resolveWsUrl(roomId: string): string {
 export function createWsTransport(opts: WsTransportOptions): RealtimeTransport {
   let ws: WebSocket | null = null;
   let closedByUser = false;
+  let attempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let messageCb: ((msg: ServerMsg) => void) | null = null;
-  let statusCb: ((connected: boolean) => void) | null = null;
+  let statusCb: ((status: ConnectionStatus) => void) | null = null;
+  let status: ConnectionStatus = "connecting";
+
+  const setStatus = (s: ConnectionStatus) => {
+    if (s === status) return;
+    status = s;
+    statusCb?.(s);
+  };
 
   const send = (msg: ClientMsg) => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
   const connect = () => {
+    // Duplicate-connection guard: never open a second socket while one is
+    // connecting or open.
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+      return;
+    }
+    setStatus("connecting");
     ws = new WebSocket(opts.url);
     ws.onopen = () => {
-      statusCb?.(true);
+      attempts = 0;
+      setStatus("connected");
       send({
         type: "hello",
         roomId: opts.roomId,
@@ -67,10 +92,19 @@ export function createWsTransport(opts: WsTransportOptions): RealtimeTransport {
       }
     };
     ws.onclose = () => {
-      statusCb?.(false);
-      if (!closedByUser) {
-        reconnectTimer = setTimeout(connect, 1200);
+      ws = null;
+      if (closedByUser) {
+        setStatus("disconnected");
+        return;
       }
+      attempts += 1;
+      if (attempts > MAX_RECONNECT_ATTEMPTS) {
+        setStatus("failed"); // stop looping; the UI can offer a manual retry
+        return;
+      }
+      setStatus("reconnecting");
+      const delay = Math.min(BACKOFF_BASE_MS * 2 ** (attempts - 1), BACKOFF_CAP_MS);
+      reconnectTimer = setTimeout(connect, delay);
     };
     ws.onerror = () => ws?.close();
   };
@@ -81,11 +115,15 @@ export function createWsTransport(opts: WsTransportOptions): RealtimeTransport {
     get connected() {
       return ws?.readyState === WebSocket.OPEN;
     },
+    get status() {
+      return status;
+    },
     onMessage(cb) {
       messageCb = cb;
     },
     onStatus(cb) {
       statusCb = cb;
+      cb(status); // deliver the current status immediately
     },
     sendInput(input: InputState) {
       send({ type: "input", ...input });
@@ -93,9 +131,19 @@ export function createWsTransport(opts: WsTransportOptions): RealtimeTransport {
     sendCatch(targetId: string) {
       send({ type: "catch", targetId });
     },
+    reconnect() {
+      // Manual retry after the automatic attempts were exhausted.
+      if (status === "failed" || status === "disconnected") {
+        closedByUser = false;
+        attempts = 0;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        connect();
+      }
+    },
     close() {
       closedByUser = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      setStatus("disconnected");
       ws?.close();
     },
   };

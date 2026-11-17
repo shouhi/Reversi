@@ -35,3 +35,13 @@ export function textureForPaint(dataUrl: string | undefined): THREE.Texture {
   cache.set(dataUrl, tex);
   return tex;
 }
+
+/**
+ * Disposes + clears all cached paint textures. Call when leaving a round so GPU
+ * texture memory doesn't grow unbounded across many rooms in one session (the
+ * shared `blank` texture is kept).
+ */
+export function clearTextureCache(): void {
+  for (const tex of cache.values()) tex.dispose();
+  cache.clear();
+}
