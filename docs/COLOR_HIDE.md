@@ -439,3 +439,67 @@ WS接続確立 ~330ms（TLS+edge込み）。スナップショット ~14.5Hz（6
 - 第3段階（要承認）：本番Worker `color-hide-realtime` のデプロイ、Vercel **Production** env（`NEXT_PUBLIC_COLOR_HIDE_WS_URL`/`COLOR_HIDE_RT_SECRET`）設定、PR #5 の main マージ。
 - Vercel Previewでの**恒久的**ステージング運用には、ステージング専用 Upstash DB の作成（無料枠）＋ game-box プロジェクトの Preview スコープ env 設定が必要（本番Redis分離のため）。今回は本番Redis汚染回避のためトンネル方式で代替。
 - 再テスト時は staging Worker の `COLOR_HIDE_APP_URL` を到達可能な分離appへ再設定（ngrok URLは揮発性）。
+
+---
+
+# Phase 7 — 本番公開前の最終準備・リリース計画（2026-11-18）
+
+**今回の実施範囲：調査・設定確認・安全なローカル修正・テスト・Draft PR更新のみ。** 本番デプロイ／Production env変更／課金プラン変更／mainマージは**未実施**。
+
+## VERCEL PROJECT（確認済み）
+- アカウント：`shouhi` ／ Team：**shouhis-projects**（hobbyプラン、orgId `team_Xk3VLZ9d5yHyURyRyrXe9rEN`）。
+- 本番プロジェクト：**game-box**（Project ID **`prj_YNs2Ut1Z8vZglPb1enDEPiNlRM2T`**）、Production URL **https://zen-gamebox.vercel.app**、Next.js、Node 26.x。GitHub連携でPRプレビュー＆mainの自動Productionデプロイ。
+- **ローカル `.vercel` 修正済み**：以前は `projectName: reversi-online`（プロジェクトはID同一のまま game-box へ改名されていた）。`vercel link --project game-box --scope shouhis-projects` でローカルリンクのみ修正（`.vercel` は **.gitignore 済み**＝未コミット）。この操作は**デプロイもenv変更も発生させない**（確認済み）。副作用として gitignore 対象の `.env.local` の `VERCEL_OIDC_TOKEN` がローカル更新されたのみ（本番無影響）。
+- **環境変数スコープ（重要）**：`KV_REST_API_*`/`KV_URL`/`REDIS_URL` は **Production・Preview・Development 全スコープ共有**＝**PreviewもProductionと同じUpstash Redisを使用**。よってPreviewでのテストはProd Redisを汚染する（Phase 6でトンネル方式にした根拠）。`COLOR_HIDE_*`・`NEXT_PUBLIC_COLOR_HIDE_WS_URL` は**全スコープ未設定**（公開時にProductionへ追加が必要）。
+
+## CLOUDFLARE（本番Worker設定計画・未作成）
+- 本番Worker `color-hide-realtime`（予定URL **https://color-hide-realtime.s-ide.workers.dev**）は**未作成**。ステージング `color-hide-realtime-staging` とは別名＝**別DO名前空間で完全独立**（確認済み）。
+- 本番の環境変数（値はPhase 8で設定、ここには値を書かない）：
+
+| 変数 | 設定先 | 値/スコープ | 公開範囲 |
+|---|---|---|---|
+| `ENVIRONMENT` | Worker var | `production`（Secret強制を有効化） | 公開可 |
+| `COLOR_HIDE_APP_URL` | Worker var | `https://zen-gamebox.vercel.app` | 公開可 |
+| `COLOR_HIDE_ALLOWED_ORIGINS` | Worker var | `https://zen-gamebox.vercel.app`（独自ドメイン追加時は追記） | 公開可 |
+| `COLOR_HIDE_REALTIME_ENABLED` | Worker var | 省略（既定=有効）。緊急停止時のみ `0` | 公開可 |
+| `COLOR_HIDE_RT_SECRET` | **Worker secret** (`wrangler secret put`) | 強いランダム値。**Vercelと同値** | **秘匿・出力禁止** |
+| `NEXT_PUBLIC_COLOR_HIDE_WS_URL` | **Vercel Production env** | `wss://color-hide-realtime.s-ide.workers.dev` | 公開可（クライアントに焼込） |
+| `COLOR_HIDE_RT_SECRET` | **Vercel Production env** | 上記Workerと同値 | **秘匿** |
+
+## FREE PLAN（最新確認 2026-11-18・無料で開始可）
+- Workers Free：**100,000 req/日**（00:00 UTCリセット、超過は Error 1027＝日次上限で翌日復帰、月次ロックではない）。CPU 10ms/req、128MB。
+- Durable Objects on Free：**SQLite-backed DO 利用可**（KVバックエンドは有料のみ→本実装はSQLiteで適合）。**100,000 DO req/日 + 13,000 GB-s/日**（Workerとは別枠、日次リセット）。SQLite保存 5GB/5M行読/10万行書（本実装は保存0＝無料）。
+- WS課金換算：接続=1req、**受信メッセージ 20:1**、**送信・pingは無料**。
+- 時間課金：稼働秒×128MB。**15Hzの`setInterval`ループは対戦中ずっと"稼働"＝duration課金される**（ハイバネは対戦中は効かない）。→ **本実装は最後の接続が切れた時にintervalを停止**（`stopTick`）するので放置ルームは課金継続しない（確認済み・良好）。
+- **判定**：〜1,000試合/月はFreeで安全（duration ~1,280 GB-s/日 ≪ 13,000枠）。**律速は受信メッセージ(20:1)**：現状クライアントは約18Hzで送信＝1試合 約1,620課金req → **1日あたり約60試合でDO 10万req/日 に到達**。**低頻度のホビー公開はFreeで十分**。超えたら Workers Paid（$5/月、10M Worker req＋400k GB-s/月）。
+- **Free枠を広げる将来の最適化（今回は未実施・安定優先）**：クライアント送信をイベント駆動化（移動/視点変化時のみ＋停止時は低頻度ハートビート）すれば受信reqが激減し、1日の試合上限が大幅に上がる。サーバー送信は無料なので描画は現状維持可。
+
+## RELEASE ORDER（安全な公開順序）
+> 鉄則：`NEXT_PUBLIC_COLOR_HIDE_WS_URL` は**ビルド時にクライアントへ焼込**。Vercel Production envは**mainマージ（＝自動ビルド）より前**に設定する。自動Productionデプロイ（GitHub連携）があるので**手動 `vercel --prod` は実行しない**（二重デプロイ回避）。
+
+1. **Cloudflare 本番Worker作成**：`wrangler deploy --config cloudflare/color-hide/wrangler.toml --var ENVIRONMENT:production --var COLOR_HIDE_APP_URL:https://zen-gamebox.vercel.app --var COLOR_HIDE_ALLOWED_ORIGINS:https://zen-gamebox.vercel.app`（Worker名はwrangler.tomlの `color-hide-realtime`）。
+2. **Secret設定**：`wrangler secret put COLOR_HIDE_RT_SECRET`（強ランダム、stdin）。
+3. **Worker動作確認**：`curl https://color-hide-realtime.s-ide.workers.dev/health` → `ok`（この時点でクライアントはまだ未接続＝安全）。
+4. **Vercel Production env 設定**：`NEXT_PUBLIC_COLOR_HIDE_WS_URL=wss://color-hide-realtime.s-ide.workers.dev` と `COLOR_HIDE_RT_SECRET`（Workerと同値）を**Productionスコープのみ**に追加（env設定だけでは再デプロイされない＝現行本番は不変）。
+5. **Draft解除 → mainマージ**：→ GitHub連携が game-box Production を自動ビルド＆デプロイし、手順4のWS URLが焼き込まれる。
+6. **自動デプロイ完了を待機**（Vercelダッシュボードで確認、手動再デプロイはしない）。
+7. **公開後スモークテスト**（下記）。
+8. 異常時は**ロールバック**（下記）。
+
+アプリがWS URL付きで公開される時点（手順6完了）には本番Workerは既に稼働（手順1-3）→ **ユーザーが対戦開始時に死んだWorkerに当たらない**。ロビー/ペイント/結果はHTTPなのでWorker未準備でも壊れない（グレースフル）。さらに慎重にするなら、COLOR HIDEを一旦 `coming-soon` でマージ→直URLで検証→`available` に切替、の2段も可（現ブランチは `available`）。
+
+## SECRETS（安全な取り扱い・今回は生成/設定しない）
+- `COLOR_HIDE_RT_SECRET`：`openssl rand -base64 33` 等の十分強いランダム値。**同一値**をCloudflare Worker（`wrangler secret put`）とVercel Production env の両方へ。
+- **出力・コミット禁止**：wranglerは stdin 経由（`wrangler secret put ... < file` 等、`--var` で渡さない）。Vercelはダッシュボード貼付 or `vercel env add`（値は対話入力、コマンド行に残さない）。値をログ・チャット・GitHubに出さない。設定後は生成元ファイルを破棄。ローテーション時は両側を同時更新。
+
+## SMOKE TESTS（公開後必須・https://zen-gamebox.vercel.app）
+サイト表示／COLOR HIDE が一覧に表示／ルーム作成／招待URL共有／2人参加／ペイント＆同期／3D空間表示／WS接続（"RT未接続"が出ない）／移動同期／捕獲／勝敗判定／再戦／切断・復帰／**既存ゲーム（リバーシ等7本）が正常**。
+**停止基準**：既存ゲームに不具合＝即ロールバック。COLOR HIDE が WS 恒常接続不可／情報漏洩・不正捕獲の兆候／Error 1027頻発＝COLOR HIDE停止（REALTIME_ENABLED=0）。軽微（たまにRT未接続）＝監視継続。
+
+## ROLLBACK（緊急停止・復旧）
+- **新規接続停止**：`wrangler deploy ... --var COLOR_HIDE_REALTIME_ENABLED:0`（新規WS→503、既存は継続）。
+- **既存WS停止**：`wrangler rollback`（前バージョン）／最終手段 `wrangler delete`（全切断）。削除は最後。
+- **Vercel本番復旧**：Vercelダッシュボードで**直前のProductionデプロイに即ロールバック（Instant Rollback）**、または `NEXT_PUBLIC_COLOR_HIDE_WS_URL` を外して再デプロイ（※焼込のため再ビルド必要＝即時ではない。即時はCloudflare側 or Vercel Instant Rollback）。
+- **Secret再設定/ローテーション**：Worker と Vercel Production を同時更新→Worker再デプロイ＋Vercel再デプロイ。
+- **利用者表示**：WS不通時はクライアントが「RT未接続」バッジ表示＋ロビー/ペイント/結果はHTTPで継続。
+- **既存ゲーム**：COLOR HIDE は別slug/API/Workerで分離＝ロールバック操作の影響を受けない。**Redis本番データは削除しない**（DOは永続データ無しのため切断時も位置情報のみ消失、ルーム状態はRedis権威で保持）。
