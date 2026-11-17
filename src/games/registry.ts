@@ -1,5 +1,6 @@
 import type { GameMeta } from "./types";
 import { reversiGame } from "./reversi";
+import { ticTacToeGame } from "./tic-tac-toe";
 
 /**
  * The single source of truth for the game catalog.
@@ -13,21 +14,9 @@ import { reversiGame } from "./reversi";
  */
 const GAMES: GameMeta[] = [
   reversiGame,
+  ticTacToeGame,
 
   // --- Coming soon (listed, not yet playable; no route) --------------------
-  {
-    id: "tic-tac-toe",
-    slug: "tic-tac-toe",
-    title: "○×ゲーム",
-    description: "3×3のマスで3つ並べたら勝ち。シンプルで奥深い定番ゲーム。",
-    category: "ボードゲーム",
-    minPlayers: 2,
-    maxPlayers: 2,
-    supportedModes: ["online-2p"],
-    status: "coming-soon",
-    displayOrder: 20,
-    accent: "#60a5fa",
-  },
   {
     id: "connect-four",
     slug: "connect-four",

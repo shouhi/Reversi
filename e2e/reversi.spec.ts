@@ -130,9 +130,9 @@ test("the catalog lists games and only links playable ones", async ({
   await expect(reversiLink).toBeVisible();
 
   // A coming-soon game is listed, shows 準備中, and is NOT a clickable link.
-  await expect(page.getByRole("heading", { name: "○×ゲーム" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "四目並べ" })).toBeVisible();
   await expect(page.getByText("準備中").first()).toBeVisible();
-  await expect(page.getByRole("link", { name: /○×ゲーム/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /四目並べ/ })).toHaveCount(0);
 
   // Selecting Reversi navigates to its start page.
   await reversiLink.click();
