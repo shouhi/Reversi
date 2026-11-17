@@ -408,3 +408,34 @@ curl https://color-hide-realtime.<subdomain>.workers.dev/health     # → ok
 ## コスト（再掲・2026-11-17）
 
 Cloudflare DO：100試合 $5 ／1,000 ~$5 ／10,000 ~$7（送信・帯域非課金、永続化なし）。支配的変動費はポーリング由来の Vercel Functions（Pro $20/席＋従量）＋Upstashコマンド（PAYG $2/1M）。合計概算：100=$5〜25、1,000=~$30、10,000=~$65〜75。無料枠は商用不可＆10k試合で超過（Vercel 1M呼び出し／Upstash 500K cmd）。予算管理：Vercel Spend Management・Upstash予算上限・Cloudflareアラート（ハード上限は無し＝要確認）。**課金操作は未実施。**
+
+---
+
+# Phase 6 — Cloudflareステージング構築・実機対戦テスト（2026-11-18）
+
+**承認範囲内で実施：ステージングWorker作成・DO作成・専用Secret生成/設定・ステージングへのデプロイ・実機対戦テスト。** 本番Workerデプロイ／Workers Paid変更／Vercel本番変更／本番Redis書込み／mainマージは**一切なし**。
+
+## CLOUDFLARE（ステージング）
+- Worker：**`color-hide-realtime-staging`** → **https://color-hide-realtime-staging.s-ide.workers.dev**（health 200、実インターネット）。アカウント：ユーザー本人（`s.ide@zen-llc.co.jp`）。
+- Durable Object：`ColorHide`（SQLiteクラス、v1 migration適用、**永続データ0件**）。本番Workerとは別名＝**別DO名前空間**（本番Workerは未作成）。
+- **Workers Free で SQLite-backed DO が動作することを実deployで確認**（Paidへの変更なし・課金発生なし）。初回deployはeventual-consistencyで一度10007エラー→再deployで `s-ide.workers.dev` サブドメイン付与・成功。
+- 専用Secret `COLOR_HIDE_RT_SECRET` を生成・`wrangler secret put`（stdin経由、**値は非表示・非ログ・非コミット**）。`ENVIRONMENT=production` で本番同等のSecret強制。
+- テスト後は `COLOR_HIDE_APP_URL=https://placeholder.invalid` に再設定し**無害な待機状態**で残置（再テスト用）。削除はしていない。
+
+## 分離（本番非影響）
+実対戦テストは **ngrokトンネル経由のローカル・メモリストアapp**（`REVERSI_MEMORY_STORE=1`、Redis資格情報を空に）で実施 → **本番Upstash Redisに一切アクセスせず**。Vercel本番/Preview envは未変更、本番Worker未作成。ローカルの`.env.local`には本番KV資格情報があるため、プロセスenvで空上書きして memory store を強制（Nextは既存process.envを上書きしない仕様）。
+
+## MULTIPLAYER TESTS（デプロイ済みWorkerに対し実インターネットで16/16 PASS）
+2人：作成+参加 / ロール割当 / welcome / **情報漏洩なし（鬼は隠れhider座標を受信しない）** / hiderは鬼を常に受信 / **アンチテレポート（クランプ）** / **捕獲→鬼勝利**。セキュリティ：**不正トークン拒否** / **不正Origin拒否**。6人：**7人目拒否(409)** / 鬼1+隠れ5 / 全員welcome。**クロスルーム分離** / **ペイント共有** / **再接続**。
+ブラウザ実機（ngrok配信UI → デプロイ済みedge Workerにwss接続）：preparing→painting→hiding→seekingと進行、3Dシーン描画、"RT未接続"なし＝**デプロイ済みWorkerにライブ接続**を確認。
+
+## PERFORMANCE（実測）
+WS接続確立 ~330ms（TLS+edge込み）。スナップショット ~14.5Hz（6人で1クライアント2秒29件/17.6KB ≈ 8.8KB/s）。ローカルworkerd計測と整合。FPSは前フェーズのPC実測（120fps/3マップ）を踏襲、スマホ実機は未計測。
+
+## COST（実測ベース）
+テスト総量は数百リクエスト＋数分のDO稼働＝**Workers Free日次上限（10万req/日・1.3万GB-s/日）に対し誤差レベル**。DO保存0件＝storage課金なし。**想定外課金リスクなし**。本番でのWorkers Paid要否：低頻度（〜1,000試合/月）はFree日次枠内で可、1万試合/月（≈53万req/日）はFree日次上限超過→Paid必要。ステージング/初期公開はFreeで十分。
+
+## 残課題（本番公開=第3段階へ）
+- 第3段階（要承認）：本番Worker `color-hide-realtime` のデプロイ、Vercel **Production** env（`NEXT_PUBLIC_COLOR_HIDE_WS_URL`/`COLOR_HIDE_RT_SECRET`）設定、PR #5 の main マージ。
+- Vercel Previewでの**恒久的**ステージング運用には、ステージング専用 Upstash DB の作成（無料枠）＋ game-box プロジェクトの Preview スコープ env 設定が必要（本番Redis分離のため）。今回は本番Redis汚染回避のためトンネル方式で代替。
+- 再テスト時は staging Worker の `COLOR_HIDE_APP_URL` を到達可能な分離appへ再設定（ngrok URLは揮発性）。
