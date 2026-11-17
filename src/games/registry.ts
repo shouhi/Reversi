@@ -5,6 +5,7 @@ import { connectFourGame } from "./connect-four";
 import { chessGame } from "./chess";
 import { shogiGame } from "./shogi";
 import { memoryGame } from "./memory";
+import { minecartGame } from "./minecart";
 
 /**
  * The single source of truth for the game catalog.
@@ -23,6 +24,7 @@ const GAMES: GameMeta[] = [
   chessGame,
   shogiGame,
   memoryGame,
+  minecartGame,
 ];
 
 const byOrder = (a: GameMeta, b: GameMeta) => a.displayOrder - b.displayOrder;
