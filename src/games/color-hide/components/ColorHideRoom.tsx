@@ -26,8 +26,8 @@ import type { PublicRoomState } from "../types";
 /** Sound + banner shown when the round enters a phase (result handled separately). */
 const PHASE_CUES: Partial<Record<string, { sfx: SfxName; text: string }>> = {
   preparing: { sfx: "gameStart", text: "まもなく開始" },
-  painting: { sfx: "phase", text: "🎨 ペイントタイム" },
-  hiding: { sfx: "phase", text: "🙈 隠れる時間" },
+  painting: { sfx: "phase", text: "🎨 ペイントタイム" }, // legacy (rooms mid-paint)
+  hiding: { sfx: "phase", text: "🙈 隠れて & ペイント" },
   seeking: { sfx: "phase", text: "👀 探索開始！" },
 };
 
@@ -245,7 +245,21 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
               seconds={seconds}
             />
           )
-        ) : state.phase === "hiding" || state.phase === "seeking" ? (
+        ) : state.phase === "hiding" ? (
+          // Phase 10: Hiding & Painting. Hiders are in the world (and can paint
+          // in-place); the seeker waits BLIND — rendered as a wait card with no
+          // RoundView, so no realtime transport is opened and the client never even
+          // receives hider positions (the server also withholds them until seeking).
+          me.role === "seeker" ? (
+            <WaitingCard
+              title="あなたは鬼です"
+              body="隠れる側がマップ内に隠れて、周囲の色にペイント中です。探索開始まで待ちましょう…"
+              seconds={seconds}
+            />
+          ) : (
+            <RoundView roomId={roomId} state={state} me={me} remainingMs={remainingMs} />
+          )
+        ) : state.phase === "seeking" ? (
           <RoundView roomId={roomId} state={state} me={me} remainingMs={remainingMs} />
         ) : state.phase === "result" ? (
           <ResultScreen roomId={roomId} state={state} me={me} onChanged={applyState} />
@@ -341,7 +355,7 @@ function RoleReveal({
       <p className="mt-3 text-sm text-muted">
         {seeker
           ? "探索開始まで待機。制限時間内に全員を見つけよう。"
-          : "キャラクターをペイントして、マップに隠れよう。"}
+          : "マップに隠れて、その場で周囲の色にペイントして溶け込もう。"}
       </p>
       <div className="mt-4 text-xs text-muted">マップ：{mapName}</div>
     </div>

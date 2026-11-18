@@ -17,6 +17,12 @@ import { prefersReducedMotion } from "../../lib/motion";
 import { sharedAudio } from "../../lib/audio";
 import { moveSpeedFor } from "../../lib/balance";
 import { planInputSend, type InputSample } from "../../lib/inputSend";
+import {
+  DEFAULT_GAMEPAD_SETTINGS,
+  EdgeDetector,
+  readStandardGamepad,
+  type GamepadSettings,
+} from "../../lib/gamepad";
 import AnimatedCharacter, { type CharacterAnimDriver } from "./AnimatedCharacter";
 import MapScene from "./MapScene";
 import { textureForPaint } from "./textures";
@@ -49,6 +55,20 @@ export interface GameSceneProps {
   canCatch: boolean;
   /** This player has been caught and is now a spectator (no movement/catch). */
   spectating?: boolean;
+  /**
+   * Phase 10: the in-world paint overlay is open. Movement + look input are frozen
+   * and held keys are released so a key held at open-time can't cause drift, and so
+   * drawing never fights camera/movement control.
+   */
+  inputLocked?: boolean;
+  /** Phase 10: the hider may open the paint overlay right now (hiding, not caught). */
+  paintAvailable?: boolean;
+  /** Phase 10: open the in-world paint overlay (E / gamepad X). */
+  onRequestPaint?: () => void;
+  /** Phase 10: close the paint overlay (Escape / gamepad B). */
+  onClosePaint?: () => void;
+  /** Gamepad tuning (deadzone / look sensitivity / invert-Y). */
+  gamepadSettings?: GamepadSettings;
   transport: RealtimeTransport;
   roster: RosterEntry[];
   paints: Record<string, string>;
@@ -58,6 +78,18 @@ export interface GameSceneProps {
 const EYE = 1.5;
 const CAM_DIST = 4.4;
 const LOOK_SENS = 0.005;
+/** Gamepad right-stick camera turn rate (radians/sec at full deflection). */
+const GP_LOOK_RATE = 2.6;
+
+/** Normalized gamepad drive shared from the poll loop to the frame loop. */
+interface GamepadDrive {
+  moveX: number;
+  moveY: number;
+  moveActive: boolean;
+  running: boolean;
+  lookX: number;
+  lookY: number;
+}
 
 export default function GameScene(props: GameSceneProps) {
   const input = useRef<GameInput>({
@@ -119,43 +151,33 @@ export default function GameScene(props: GameSceneProps) {
   };
   useEffect(() => () => flashTimer.current && clearTimeout(flashTimer.current), []);
 
-  // Keyboard input.
-  useEffect(() => {
-    const keys = new Set<string>();
-    const recompute = () => {
-      const i = input.current;
-      i.move.x = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
-      i.move.y = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
-      i.running = keys.has("ShiftLeft") || keys.has("ShiftRight");
-    };
-    const cyclePose = () => {
-      input.current.poseIndex = (input.current.poseIndex + 1) % POSES.length;
-      setPoseLabel(POSES[input.current.poseIndex]);
-    };
-    const down = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      if (e.code === "KeyE") cyclePose();
-      else if (e.code === "KeyC") {
-        input.current.poseIndex = input.current.poseIndex === 1 ? 0 : 1;
-        setPoseLabel(POSES[input.current.poseIndex]);
-      } else if (e.code === "Space") {
-        input.current.catchReq = true;
-      } else {
-        keys.add(e.code);
-        recompute();
-      }
-    };
-    const up = (e: KeyboardEvent) => {
-      keys.delete(e.code);
-      recompute();
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
-  }, []);
+  // Pressed keys live in a ref so the paint-mode lock (below) can release them all
+  // when the overlay opens — otherwise a key held at open-time would stay "down".
+  const keysRef = useRef(new Set<string>());
+  const lockedRef = useRef(false);
+  // Mirror dynamic props into refs so the mount-once key/gamepad handlers always
+  // read fresh values (Phase 10 controller support).
+  const paintAvailRef = useRef(false);
+  paintAvailRef.current = !!props.paintAvailable;
+  const onRequestPaintRef = useRef(props.onRequestPaint);
+  onRequestPaintRef.current = props.onRequestPaint;
+  const onClosePaintRef = useRef(props.onClosePaint);
+  onClosePaintRef.current = props.onClosePaint;
+  const canCatchRef = useRef(props.canCatch);
+  canCatchRef.current = props.canCatch;
+  const myRoleRef = useRef(props.myRole);
+  myRoleRef.current = props.myRole;
+  const settingsRef = useRef<GamepadSettings>(props.gamepadSettings ?? DEFAULT_GAMEPAD_SETTINGS);
+  settingsRef.current = props.gamepadSettings ?? DEFAULT_GAMEPAD_SETTINGS;
+  // Normalized gamepad state, written by the poll loop and read by the frame loop.
+  const gpRef = useRef<GamepadDrive>({
+    moveX: 0,
+    moveY: 0,
+    moveActive: false,
+    running: false,
+    lookX: 0,
+    lookY: 0,
+  });
 
   const cyclePoseBtn = () => {
     input.current.poseIndex = (input.current.poseIndex + 1) % POSES.length;
@@ -165,6 +187,176 @@ export default function GameScene(props: GameSceneProps) {
     input.current.poseIndex = input.current.poseIndex === 1 ? 0 : 1;
     setPoseLabel(POSES[input.current.poseIndex]);
   };
+  // Open the paint overlay (if available) or close it — shared by E and gamepad X.
+  const togglePaint = () => {
+    if (lockedRef.current) onClosePaintRef.current?.();
+    else if (paintAvailRef.current) onRequestPaintRef.current?.();
+  };
+
+  const recomputeKeys = () => {
+    const keys = keysRef.current;
+    const i = input.current;
+    const right = keys.has("KeyD") || keys.has("ArrowRight");
+    const left = keys.has("KeyA") || keys.has("ArrowLeft");
+    const fwd = keys.has("KeyW") || keys.has("ArrowUp");
+    const back = keys.has("KeyS") || keys.has("ArrowDown");
+    i.move.x = (right ? 1 : 0) - (left ? 1 : 0);
+    i.move.y = (fwd ? 1 : 0) - (back ? 1 : 0);
+    i.running = keys.has("ShiftLeft") || keys.has("ShiftRight");
+  };
+
+  // When the paint overlay opens, drop every held key + zero movement/look (and any
+  // gamepad drive) so the character can't drift and drawing never conflicts with
+  // movement/camera input.
+  useEffect(() => {
+    lockedRef.current = !!props.inputLocked;
+    if (props.inputLocked) {
+      keysRef.current.clear();
+      input.current.move = { x: 0, y: 0 };
+      input.current.look = { dx: 0, dy: 0 };
+      input.current.running = false;
+      gpRef.current = { moveX: 0, moveY: 0, moveActive: false, running: false, lookX: 0, lookY: 0 };
+    }
+  }, [props.inputLocked]);
+
+  // Keyboard input (WASD + arrow keys, Phase 10). Ignores keys while typing in a
+  // field, prevents arrow-key page scroll during play, and releases all held keys
+  // on blur / tab switch so nothing stays "down".
+  useEffect(() => {
+    const keys = keysRef.current;
+    const MOVE_CODES = new Set([
+      "KeyW", "KeyA", "KeyS", "KeyD",
+      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+      "ShiftLeft", "ShiftRight",
+    ]);
+    const isTyping = (t: EventTarget | null) =>
+      t instanceof HTMLElement &&
+      (/^(input|textarea|select)$/i.test(t.tagName) || t.isContentEditable);
+    const resetHeld = () => {
+      keys.clear();
+      input.current.move = { x: 0, y: 0 };
+      input.current.look = { dx: 0, dy: 0 };
+      input.current.running = false;
+    };
+    const down = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return; // field focused → never steal game input
+      if (e.code === "KeyE") {
+        e.preventDefault();
+        if (!e.repeat) togglePaint();
+        return;
+      }
+      if (e.code === "Escape") {
+        if (lockedRef.current) onClosePaintRef.current?.();
+        return;
+      }
+      if (lockedRef.current || e.repeat) return; // overlay open → ignore gameplay keys
+      if (e.code === "KeyC" || e.code === "ControlLeft" || e.code === "ControlRight") {
+        crouchBtn();
+        return;
+      }
+      if (e.code === "Space") {
+        e.preventDefault();
+        input.current.catchReq = true;
+        return;
+      }
+      if (MOVE_CODES.has(e.code)) {
+        if (e.code.startsWith("Arrow")) e.preventDefault(); // no page scroll mid-play
+        keys.add(e.code);
+        recomputeKeys();
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (keys.delete(e.code)) recomputeKeys();
+    };
+    const onVisibility = () => {
+      if (document.hidden) resetHeld();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", resetHeld);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", resetHeld);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // Gamepad polling (Phase 10). One rAF loop reads the first connected standard-
+  // mapping pad, normalizes it (deadzone + diagonal clamp), and feeds the SAME
+  // input model: left stick / d-pad → move, right stick → camera, ZR → run, ZL →
+  // crouch (toggle), X → open/close paint, Y → pose, A → catch (seeker), B → close.
+  // No pad or a non-standard mapping → contributes nothing (keyboard/touch keep
+  // working, and this is the safe reset on disconnect).
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("getGamepads" in navigator)) return;
+    let raf = 0;
+    const west = new EdgeDetector();
+    const east = new EdgeDetector();
+    const north = new EdgeDetector();
+    const south = new EdgeDetector();
+    const zl = new EdgeDetector();
+    const resetGp = () => {
+      gpRef.current = { moveX: 0, moveY: 0, moveActive: false, running: false, lookX: 0, lookY: 0 };
+      west.reset();
+      east.reset();
+      north.reset();
+      south.reset();
+      zl.reset();
+    };
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const pads = navigator.getGamepads?.() ?? [];
+      let pad: Gamepad | null = null;
+      for (const p of pads) {
+        if (p && p.connected) {
+          pad = p;
+          break;
+        }
+      }
+      const reading = pad
+        ? readStandardGamepad(
+            {
+              mapping: pad.mapping,
+              axes: pad.axes,
+              buttons: pad.buttons.map((b) => ({ pressed: b.pressed, value: b.value })),
+            },
+            settingsRef.current,
+          )
+        : null;
+      if (!reading) {
+        resetGp();
+        return;
+      }
+      const locked = lockedRef.current;
+      gpRef.current = {
+        moveX: reading.moveX,
+        moveY: reading.moveY,
+        moveActive: !locked && Math.hypot(reading.moveX, reading.moveY) > 0.001,
+        running: !locked && reading.run,
+        lookX: locked ? 0 : reading.lookX,
+        lookY: locked ? 0 : reading.lookY,
+      };
+      // Edge-triggered actions (fire once per press). X toggles paint in both modes.
+      if (west.fire(reading.buttons.openPaint)) togglePaint();
+      const cancel = east.fire(reading.buttons.cancel);
+      const pose = north.fire(reading.buttons.pose);
+      const crouch = zl.fire(reading.crouch);
+      const confirm = south.fire(reading.buttons.confirm);
+      if (locked) {
+        if (cancel) onClosePaintRef.current?.();
+      } else {
+        if (pose) cyclePoseBtn();
+        if (crouch) crouchBtn();
+        if (confirm && myRoleRef.current === "seeker" && canCatchRef.current) {
+          input.current.catchReq = true;
+        }
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // Pointer-drag look (desktop + touch). Tracks ONE pointer so a second finger on
   // the virtual stick / buttons (which stopPropagation) never rotates the camera;
@@ -173,12 +365,12 @@ export default function GameScene(props: GameSceneProps) {
   const lastPtr = useRef({ x: 0, y: 0 });
   const MAX_LOOK_STEP = 80;
   const onPointerDown = (e: React.PointerEvent) => {
-    if (lookPointer.current !== null) return;
+    if (lockedRef.current || lookPointer.current !== null) return;
     lookPointer.current = e.pointerId;
     lastPtr.current = { x: e.clientX, y: e.clientY };
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (e.pointerId !== lookPointer.current) return;
+    if (lockedRef.current || e.pointerId !== lookPointer.current) return;
     input.current.look.dx += clampLookDelta(e.clientX - lastPtr.current.x, MAX_LOOK_STEP);
     input.current.look.dy += clampLookDelta(e.clientY - lastPtr.current.y, MAX_LOOK_STEP);
     lastPtr.current = { x: e.clientX, y: e.clientY };
@@ -202,7 +394,7 @@ export default function GameScene(props: GameSceneProps) {
         camera={{ fov: 60, near: 0.1, far: 120 }}
         dpr={dprFor(quality)}
       >
-        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} followSeeker={followSeeker} />
+        <SceneContents {...props} input={input} gamepad={gpRef} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} followSeeker={followSeeker} />
       </Canvas>
 
       {/* Spectator badge + camera toggle (only for a caught player). */}
@@ -241,11 +433,15 @@ export default function GameScene(props: GameSceneProps) {
         </div>
       )}
 
-      {/* Desktop controls hint */}
+      {/* Desktop controls hint (keyboard + gamepad) */}
       {!touch && (
         <div className="pointer-events-none absolute bottom-3 left-3 rounded bg-black/40 px-2 py-1 text-[11px] text-white/80">
-          WASD移動 / ドラッグで視点 / Shift走る / C しゃがむ / E ポーズ
-          {props.myRole === "seeker" ? " / Space 捕まえる" : ` (${poseLabel})`}
+          WASD・矢印/左スティック 移動 / ドラッグ・右スティック 視点 / Shift・ZR 走る / Ctrl・C・ZL しゃがむ
+          {props.myRole === "seeker"
+            ? " / Space・A 捕まえる"
+            : props.paintAvailable
+              ? " / E・X ペイント"
+              : ` (${poseLabel})`}
         </div>
       )}
 
@@ -281,6 +477,7 @@ export default function GameScene(props: GameSceneProps) {
 
 interface ContentsProps extends GameSceneProps {
   input: React.MutableRefObject<GameInput>;
+  gamepad: React.MutableRefObject<GamepadDrive>;
   snapshot: React.MutableRefObject<Map<string, NetPlayer>>;
   caught: Set<string>;
   quality: Quality;
@@ -295,10 +492,12 @@ function SceneContents({
   canMove,
   canCatch,
   spectating,
+  inputLocked,
   transport,
   roster,
   paints,
   input,
+  gamepad,
   snapshot,
   caught,
   quality,
@@ -329,26 +528,33 @@ function SceneContents({
   useFrame((_state, delta) => {
     const dt = Math.min(delta, 0.05);
     const i = input.current;
+    const gp = gamepad.current; // normalized gamepad drive (zeroed when none/locked)
 
-    // --- look ---
+    // --- look (pointer deltas + gamepad right-stick as a per-second rate) ---
     camYaw.current -= i.look.dx * LOOK_SENS;
     camPitch.current = clamp(camPitch.current + i.look.dy * LOOK_SENS, -0.15, 1.0);
     i.look.dx = 0;
     i.look.dy = 0;
+    if (gp.lookX !== 0 || gp.lookY !== 0) {
+      camYaw.current -= gp.lookX * GP_LOOK_RATE * dt;
+      camPitch.current = clamp(camPitch.current + gp.lookY * GP_LOOK_RATE * dt, -0.15, 1.0);
+    }
 
     const pose = POSES[i.poseIndex] ?? "stand";
+    const running = i.running || gp.running; // Shift OR gamepad ZR
 
     // --- movement (camera-relative, server-validated echo) ---
     fwd.set(Math.sin(camYaw.current), 0, -Math.cos(camYaw.current));
     right.set(fwd.z, 0, -fwd.x); // 90° clockwise of forward on XZ
-    let mx = i.move.x;
-    let my = i.move.y;
+    // Gamepad drives movement when its stick/d-pad is active; otherwise keyboard/touch.
+    let mx = gp.moveActive ? gp.moveX : i.move.x;
+    let my = gp.moveActive ? gp.moveY : i.move.y;
     const mlen = Math.hypot(mx, my);
-    const moving = canMove && mlen > 0.05;
+    const moving = canMove && !inputLocked && mlen > 0.05;
     if (moving) {
       mx /= Math.max(1, mlen);
       my /= Math.max(1, mlen);
-      const base = moveSpeedFor(myRole, { running: i.running, crouched: pose !== "stand" });
+      const base = moveSpeedFor(myRole, { running, crouched: pose !== "stand" });
       const vx = (fwd.x * my + right.x * mx) * base * dt;
       const vz = (fwd.z * my + right.z * mx) * base * dt;
       pos.current = resolveMove(
@@ -361,7 +567,7 @@ function SceneContents({
 
     // --- cosmetic anim state (drives the local rig + relayed to others) ---
     const anim: NetPlayer["anim"] = moving
-      ? i.running
+      ? running
         ? "run"
         : "walk"
       : pose === "stand"
@@ -370,7 +576,7 @@ function SceneContents({
     if (localAnim.current) localAnim.current.anim = anim;
     // Local footsteps only (safe): a remote player's footstep would risk leaking a
     // hider the server hasn't shown us. The engine throttles these to a cadence.
-    if (moving) sharedAudio().play(i.running ? "footstepRun" : "footstepWalk");
+    if (moving) sharedAudio().play(running ? "footstepRun" : "footstepWalk");
 
     // --- place local character ---
     if (localGroup.current) {
@@ -436,7 +642,7 @@ function SceneContents({
       z: pos.current.z,
       yaw: camYaw.current,
       moving,
-      running: i.running,
+      running,
       pose,
     };
     const dtSince = prevSent.current ? nowMs - lastSentAt.current : Infinity;
@@ -454,7 +660,7 @@ function SceneContents({
         anim,
         pose,
         moving,
-        running: i.running,
+        running,
       });
     }
   });

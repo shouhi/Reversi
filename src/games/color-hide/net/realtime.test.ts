@@ -57,6 +57,17 @@ describe("buildSnapshot (per-recipient visibility filter)", () => {
     expect(ids).not.toContain("N"); // occluded ⇒ not leaked to the seeker
   });
 
+  it("Phase 10: a seeker who cannot yet seek (pre-seeking) receives NO hider", () => {
+    // During Hiding & Painting the seeker is blind: even a geometrically-visible
+    // hider must not be serialised to the seeker.
+    const ids = buildSnapshot(seeker, [seeker, near], [], { seekerCanSee: false }).map(
+      (p) => p.id,
+    );
+    expect(ids).toEqual(["S"]); // only itself; the visible hider is withheld
+    // With seeking active (default), the same visible hider IS included.
+    expect(buildSnapshot(seeker, [seeker, near], []).map((p) => p.id)).toContain("N");
+  });
+
   it("a hider sees the seeker and fellow hiders (teammates), even hidden ones", () => {
     const me = posed("N", "hider", { x: 0, y: 0, z: -5 });
     const mate = posed("M", "hider", { x: 10, y: 0, z: 10 });
@@ -270,6 +281,21 @@ describe("ColorHideServer.tick (snapshot filtering end-to-end)", () => {
     expect(h.lastSnapshotIds("cS").sort()).toEqual(["S"]); // only itself
     // The hider still sees itself and the seeker.
     expect(h.lastSnapshotIds("cA").sort()).toEqual(["A", "S"]);
+  });
+});
+
+describe("Phase 10: seeker is blind to hiders before seeking (server-authoritative)", () => {
+  it("during hiding, a seeker receives NO hider even if one is right in front", async () => {
+    const hh = harness("hiding");
+    await hh.server.handleHello("cS", "r", "S", 0);
+    await hh.server.handleHello("cA", "r", "A", 0);
+    // Put the hider directly in the seeker's line of sight + range.
+    hh.server.__setPose("cS", { pos: { x: 0, y: 0, z: 2 }, yaw: 0 });
+    hh.server.__setPose("cA", { pos: { x: 0, y: 0, z: 0.5 } });
+    hh.server.tick(100);
+    expect(hh.lastSnapshotIds("cS").sort()).toEqual(["S"]); // hider withheld in hiding
+    // The hider still sees itself + the (connected) seeker.
+    expect(hh.lastSnapshotIds("cA").sort()).toEqual(["A", "S"]);
   });
 });
 

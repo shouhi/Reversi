@@ -182,7 +182,7 @@ describe("startGame", () => {
 });
 
 describe("phase progression over time (server clock)", () => {
-  it("walks preparing → painting → hiding → seeking → result as time passes", async () => {
+  it("walks preparing → hiding → seeking → result as time passes (Phase 10)", async () => {
     const store = freshStore();
     const { roomId, tokens } = await roomWith(store, 2, 0);
     for (const t of tokens) await setReady(store, roomId, t, true, 0);
@@ -195,13 +195,13 @@ describe("phase progression over time (server clock)", () => {
       return v.value.phase;
     };
 
+    // Phase 10: the standalone painting phase is merged into hiding, so preparing
+    // advances straight to hiding (where in-world painting happens).
     expect(await at(PREPARING_MS - 1)).toBe("preparing");
-    expect(await at(PREPARING_MS + 1)).toBe("painting");
-    expect(await at(PREPARING_MS + PAINTING_MS + 1)).toBe("hiding");
-    expect(await at(PREPARING_MS + PAINTING_MS + HIDING_MS + 1)).toBe("seeking");
+    expect(await at(PREPARING_MS + 1)).toBe("hiding");
+    expect(await at(PREPARING_MS + HIDING_MS + 1)).toBe("seeking");
 
-    const end =
-      PREPARING_MS + PAINTING_MS + HIDING_MS + SEEKING_MS + 1;
+    const end = PREPARING_MS + HIDING_MS + SEEKING_MS + 1;
     const v = await getRoomView(store, roomId, tokens[0], end);
     if (!v.ok) throw new Error("view failed");
     expect(v.value.phase).toBe("result");
@@ -241,12 +241,13 @@ describe("phase progression over time (server clock)", () => {
     if (!start.ok) throw new Error("start failed");
     const hiderIds = start.value.players.filter((p) => p.role === "hider").map((p) => p.id);
 
-    // During PAINTING (not seeking) — e.g. the DO acting on stale "seeking" meta.
-    const duringPainting = PREPARING_MS + 1000;
-    const res = await markCaught(store, roomId, hiderIds[0], duringPainting);
+    // During HIDING (not seeking) — e.g. the DO acting on stale "seeking" meta.
+    // Phase 10: painting is merged into hiding, so this is the pre-seeking window.
+    const duringHiding = PREPARING_MS + 1000;
+    const res = await markCaught(store, roomId, hiderIds[0], duringHiding);
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.value.phase).toBe("painting"); // phase unchanged
+      expect(res.value.phase).toBe("hiding"); // phase unchanged
       expect(res.value.result).toBeNull(); // round NOT ended
       const target = res.value.players.find((p) => p.id === hiderIds[0]);
       expect(target?.caught).toBe(false); // hider NOT caught

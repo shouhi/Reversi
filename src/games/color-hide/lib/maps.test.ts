@@ -1,8 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { allMaps, getMap } from "./maps";
+import { allMaps, getMap, mapPalette } from "./maps";
 import { expandAabb, pointInAabb } from "./geometry";
 import { MAP_IDS, MAX_PLAYERS, PLAYER_RADIUS } from "./constants";
 import type { Vec3 } from "../types";
+
+describe("mapPalette (Phase 10 in-world eyedropper)", () => {
+  it("exposes the exact rendered surface colours (wall/floor/accent) for every map", () => {
+    for (const id of MAP_IDS) {
+      const map = getMap(id);
+      const pal = mapPalette(id);
+      const byKey = Object.fromEntries(pal.map((s) => [s.key, s.color]));
+      // These must match what MapScene paints the world with, so a hider blends in.
+      expect(byKey.wall).toBe(map.theme.wall);
+      expect(byKey.floor).toBe(map.theme.floor);
+      expect(byKey.accent).toBe(map.theme.accent);
+      // Every swatch is a usable hex colour with a label.
+      for (const s of pal) {
+        expect(s.label.length).toBeGreaterThan(0);
+        expect(s.color).toMatch(/^#[0-9a-fA-F]{3,8}$/);
+      }
+    }
+  });
+});
 
 /** A spawn is valid if it is inside the bounds and clear of every obstacle. */
 function spawnIsClear(p: Vec3, obstacles: ReturnType<typeof getMap>["obstacles"]) {

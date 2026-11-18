@@ -43,10 +43,22 @@ function envMs(name: string, def: number): number {
  * learns they are "it"; hiders learn the map. No movement yet.
  */
 export const PREPARING_MS = envMs("COLOR_HIDE_PREPARING_MS", 5_000);
-/** Hiders paint their character. Seeker waits (blind). */
+/**
+ * LEGACY (Phase 10): the standalone "painting" phase is no longer entered by new
+ * rounds — painting now happens IN the world during {@link HIDING_MS}. This value
+ * is kept only so a room that was already in "painting" when this code deployed can
+ * still advance safely (painting → hiding). See `phases.ts` LINEAR_NEXT.
+ */
 export const PAINTING_MS = envMs("COLOR_HIDE_PAINTING_MS", 60_000);
-/** Hiders move and hide. Seeker is frozen and cannot see the map. */
-export const HIDING_MS = envMs("COLOR_HIDE_HIDING_MS", 30_000);
+/**
+ * Hiders move, choose a hiding spot, AND paint their character in-world (Phase 10).
+ * The seeker is frozen and cannot see the map or the hiders. Raised from 30s to
+ * 120s because this single window now absorbs the old 60s painting + 30s hiding
+ * (90s) PLUS the extra time it takes to explore for a spot and sample/paint the
+ * surrounding colours in 3D (slower than a dedicated flat paint screen). 120s is
+ * the Phase 10 design target; tune via COLOR_HIDE_HIDING_MS.
+ */
+export const HIDING_MS = envMs("COLOR_HIDE_HIDING_MS", 120_000);
 /** Seeker hunts. Round ends early if every hider is caught. */
 export const SEEKING_MS = envMs("COLOR_HIDE_SEEKING_MS", 180_000);
 /** How long the result screen lingers before the room may auto-return to lobby. */

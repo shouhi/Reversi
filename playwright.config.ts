@@ -44,8 +44,11 @@ export default defineConfig({
       // in ~15s instead of ~95s. Clients always use the server-sent durations, so
       // this only affects test speed, never production behaviour.
       COLOR_HIDE_PREPARING_MS: "4000",
-      COLOR_HIDE_PAINTING_MS: "4000",
-      COLOR_HIDE_HIDING_MS: "2000",
+      // Phase 10: painting is merged into hiding (the standalone painting phase is
+      // skipped). HIDING now absorbs it, so give the E2E enough of a window to open
+      // the in-world paint overlay and commit before the hunt starts.
+      COLOR_HIDE_PAINTING_MS: "4000", // legacy (unused on the forward path)
+      COLOR_HIDE_HIDING_MS: "6000",
       COLOR_HIDE_SEEKING_MS: "12000",
       COLOR_HIDE_RESULT_MS: "3000",
     },
