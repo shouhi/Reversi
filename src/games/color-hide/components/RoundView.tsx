@@ -6,6 +6,7 @@ import { clearTextureCache } from "./three/textures";
 import { createWsTransport, resolveWsUrl } from "../net/wsTransport";
 import type { ConnectionStatus, RealtimeTransport } from "../net/transport";
 import { apiGetPaints, getStoredToken } from "../lib/clientApi";
+import { sharedAudio } from "../lib/audio";
 import type { PublicPlayer, PublicRoomState, Role } from "../types";
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
@@ -89,6 +90,19 @@ export default function RoundView({
   const hiders = state.players.filter((p) => p.role === "hider");
   const alive = hiders.filter((p) => !p.caught).length;
 
+  // Final-10s warning: beep once per second, but ONLY on a 1-step decrease while
+  // connected — so a reconnect (which can jump the clock) never replays a burst.
+  const warn = seconds != null && seconds <= 10 && seconds > 0;
+  const lastWarnSec = useRef<number | null>(null);
+  useEffect(() => {
+    if (seconds == null) return;
+    const prev = lastWarnSec.current;
+    lastWarnSec.current = seconds;
+    if (connected && warn && prev != null && seconds === prev - 1) {
+      sharedAudio().play("timeWarning");
+    }
+  }, [seconds, warn, connected]);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface p-3">
@@ -117,7 +131,13 @@ export default function RoundView({
             />
             {connected ? "接続済み" : STATUS_LABEL[status]}
           </span>
-          <span className="rounded-lg bg-raised px-3 py-1 text-lg font-bold tabular-nums text-ink ring-1 ring-line">
+          <span
+            className={`rounded-lg px-3 py-1 text-lg font-bold tabular-nums ring-1 ${
+              warn
+                ? "ch-pulse bg-red-500/20 text-red-300 ring-red-500/40"
+                : "bg-raised text-ink ring-line"
+            }`}
+          >
             {seconds ?? "—"}s
           </span>
         </span>

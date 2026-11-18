@@ -12,12 +12,15 @@ import { resolveMove } from "../../lib/movement";
 import { segmentIntersectsAabb } from "../../lib/geometry";
 import { detectQuality, dprFor, shadowsFor, type Quality } from "../../lib/quality";
 import { clampLookDelta } from "../../lib/touchInput";
+import { damp, dampAngle, shouldSnap } from "../../lib/animation";
+import { prefersReducedMotion } from "../../lib/motion";
+import { sharedAudio } from "../../lib/audio";
 import {
   CROUCH_SPEED_MULT,
   RUN_SPEED,
   WALK_SPEED,
 } from "../../lib/constants";
-import Character from "./Character";
+import AnimatedCharacter, { type CharacterAnimDriver } from "./AnimatedCharacter";
 import MapScene from "./MapScene";
 import { textureForPaint } from "./textures";
 import MobileControls from "../MobileControls";
@@ -76,12 +79,17 @@ export default function GameScene(props: GameSceneProps) {
   // the realtime channel. Kept in refs so the frame loop reads without re-render.
   const snapshot = useRef<Map<string, NetPlayer>>(new Map());
   const [caught, setCaught] = useState<Set<string>>(new Set(props.caughtIds));
+  const reducedMotion = useMemo(prefersReducedMotion, []);
+  // Brief, non-blocking screen flash on a catch that involves me.
+  const [flash, setFlash] = useState<null | "success" | "caught">(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     setCaught((prev) => new Set([...prev, ...props.caughtIds]));
   }, [props.caughtIds]);
 
   useEffect(() => {
+    const { myId } = props;
     props.transport.onMessage((msg: ServerMsg) => {
       if (msg.type === "snapshot") {
         const map = new Map<string, NetPlayer>();
@@ -89,9 +97,27 @@ export default function GameScene(props: GameSceneProps) {
         snapshot.current = map;
       } else if (msg.type === "caught") {
         setCaught((prev) => new Set(prev).add(msg.hiderId));
+        // Server-authoritative catch: only NOW do we play a catch cue. The catcher
+        // hears success, the caught hider hears the caught cue; others stay quiet.
+        if (msg.byId === myId) {
+          sharedAudio().play("catchSuccess");
+          triggerFlash("success");
+        } else if (msg.hiderId === myId) {
+          sharedAudio().play("caught");
+          triggerFlash("caught");
+        }
       }
     });
-  }, [props.transport]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.transport, props.myId]);
+
+  const triggerFlash = (kind: "success" | "caught") => {
+    if (reducedMotion) return;
+    setFlash(kind);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 420);
+  };
+  useEffect(() => () => flashTimer.current && clearTimeout(flashTimer.current), []);
 
   // Keyboard input.
   useEffect(() => {
@@ -176,8 +202,22 @@ export default function GameScene(props: GameSceneProps) {
         camera={{ fov: 60, near: 0.1, far: 120 }}
         dpr={dprFor(quality)}
       >
-        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} />
+        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} />
       </Canvas>
+
+      {/* Brief catch flash (skipped under reduced-motion). Non-blocking. */}
+      {flash && (
+        <div
+          className="pointer-events-none absolute inset-0 z-20"
+          style={{
+            background:
+              flash === "success"
+                ? "radial-gradient(circle, rgba(16,185,129,0.0) 55%, rgba(16,185,129,0.35) 100%)"
+                : "radial-gradient(circle, rgba(239,68,68,0.0) 45%, rgba(239,68,68,0.45) 100%)",
+            animation: "colorHideFlash 0.42s ease-out",
+          }}
+        />
+      )}
 
       {/* Crosshair for the seeker */}
       {props.myRole === "seeker" && (
@@ -229,6 +269,7 @@ interface ContentsProps extends GameSceneProps {
   snapshot: React.MutableRefObject<Map<string, NetPlayer>>;
   caught: Set<string>;
   quality: Quality;
+  reducedMotion: boolean;
 }
 
 function SceneContents({
@@ -244,6 +285,7 @@ function SceneContents({
   snapshot,
   caught,
   quality,
+  reducedMotion,
 }: ContentsProps) {
   const map = useMemo(() => getMap(mapId), [mapId]);
   const myTexture = useMemo(() => textureForPaint(paints[myId]), [paints, myId]);
@@ -251,6 +293,7 @@ function SceneContents({
 
   const localGroup = useRef<THREE.Group>(null);
   const poseGroup = useRef<THREE.Group>(null);
+  const localAnim = useRef<CharacterAnimDriver | null>({ anim: "idle" });
   const pos = useRef(spawnFor(mapId, myId, myRole, roster));
   const camYaw = useRef(0);
   const camPitch = useRef(0.25);
@@ -295,6 +338,19 @@ function SceneContents({
         map.bounds,
       );
     }
+
+    // --- cosmetic anim state (drives the local rig + relayed to others) ---
+    const anim: NetPlayer["anim"] = moving
+      ? i.running
+        ? "run"
+        : "walk"
+      : pose === "stand"
+        ? "idle"
+        : "crouch";
+    if (localAnim.current) localAnim.current.anim = anim;
+    // Local footsteps only (safe): a remote player's footstep would risk leaking a
+    // hider the server hasn't shown us. The engine throttles these to a cadence.
+    if (moving) sharedAudio().play(i.running ? "footstepRun" : "footstepWalk");
 
     // --- place local character ---
     if (localGroup.current) {
@@ -341,7 +397,7 @@ function SceneContents({
         z: pos.current.z,
         yaw: camYaw.current,
         pitch: 0,
-        anim: moving ? (i.running ? "run" : "walk") : pose === "stand" ? "idle" : "crouch",
+        anim,
         pose,
         moving,
         running: i.running,
@@ -354,7 +410,12 @@ function SceneContents({
       <MapScene mapId={mapId} quality={quality} />
       <group ref={localGroup}>
         <group ref={poseGroup}>
-          <Character texture={myTexture} />
+          <AnimatedCharacter
+            texture={myTexture}
+            animRef={localAnim}
+            caught={caught.has(myId)}
+            reducedMotion={reducedMotion}
+          />
         </group>
       </group>
       <RemotePlayers
@@ -363,6 +424,7 @@ function SceneContents({
         paints={paints}
         snapshot={snapshot}
         caught={caught}
+        reducedMotion={reducedMotion}
       />
     </>
   );
@@ -378,12 +440,14 @@ function RemotePlayers({
   paints,
   snapshot,
   caught,
+  reducedMotion,
 }: {
   roster: RosterEntry[];
   myId: string;
   paints: Record<string, string>;
   snapshot: React.MutableRefObject<Map<string, NetPlayer>>;
   caught: Set<string>;
+  reducedMotion: boolean;
 }) {
   const others = roster.filter((r) => r.id !== myId);
   return (
@@ -395,6 +459,7 @@ function RemotePlayers({
           texture={textureForPaint(paints[r.id])}
           snapshot={snapshot}
           caught={caught.has(r.id)}
+          reducedMotion={reducedMotion}
         />
       ))}
     </>
@@ -406,14 +471,17 @@ function RemotePlayer({
   texture,
   snapshot,
   caught,
+  reducedMotion,
 }: {
   entry: RosterEntry;
   texture: THREE.Texture;
   snapshot: React.MutableRefObject<Map<string, NetPlayer>>;
   caught: boolean;
+  reducedMotion: boolean;
 }) {
   const group = useRef<THREE.Group>(null);
   const pose = useRef<THREE.Group>(null);
+  const animRef = useRef<CharacterAnimDriver | null>({ anim: "idle" });
   // A player is rendered ONLY while present in the current (server-filtered)
   // snapshot. `<Html>` labels ignore group.visible, so we must conditionally
   // MOUNT the whole subtree — otherwise a roster member who hasn't opened the 3D
@@ -423,7 +491,8 @@ function RemotePlayer({
   const presentRef = useRef(false);
   const freshRef = useRef(true);
 
-  useFrame(() => {
+  useFrame((_s, delta) => {
+    const dt = Math.min(delta, 0.05);
     const net = snapshot.current.get(entry.id);
     const isPresent = !!net;
     if (isPresent !== presentRef.current) {
@@ -433,16 +502,20 @@ function RemotePlayer({
     }
     const g = group.current;
     if (!net || !g) return;
-    if (freshRef.current) {
-      // First frame after (re)appearing: snap to the real position, never lerp
-      // in from the origin.
+    if (animRef.current) animRef.current.anim = net.anim;
+    if (freshRef.current || shouldSnap(g.position, net)) {
+      // First frame after (re)appearing, OR a jump too large to be real motion
+      // (a correction / reconnect): snap instead of skating across the map.
       g.position.set(net.x, 0, net.z);
+      g.rotation.y = net.yaw;
       freshRef.current = false;
     } else {
-      g.position.x += (net.x - g.position.x) * 0.25;
-      g.position.z += (net.z - g.position.z) * 0.25;
+      // Frame-rate-independent smoothing toward the latest snapshot; yaw takes the
+      // shortest path so turning past ±π never unwinds the long way.
+      g.position.x = damp(g.position.x, net.x, 14, dt);
+      g.position.z = damp(g.position.z, net.z, 14, dt);
+      g.rotation.y = dampAngle(g.rotation.y, net.yaw, 12, dt);
     }
-    g.rotation.y = net.yaw;
     if (pose.current) applyPoseVisual(pose.current, net.pose);
   });
 
@@ -450,7 +523,7 @@ function RemotePlayer({
   return (
     <group ref={group}>
       <group ref={pose}>
-        <Character texture={texture} />
+        <AnimatedCharacter texture={texture} animRef={animRef} caught={caught} reducedMotion={reducedMotion} />
       </group>
       <Html position={[0, 2.35, 0]} center distanceFactor={12} prepend>
         <div
