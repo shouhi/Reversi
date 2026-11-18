@@ -14,9 +14,9 @@ import { getCharacterParts } from "./characterGeometry";
 export interface CharacterProps {
   texture: THREE.Texture;
   interactive?: boolean;
-  onPaintDown?: (uv: THREE.Vector2) => void;
-  onPaintMove?: (uv: THREE.Vector2) => void;
-  onPaintUp?: () => void;
+  onPaintDown?: (uv: THREE.Vector2, pointerId: number) => void;
+  onPaintMove?: (uv: THREE.Vector2, pointerId: number) => void;
+  onPaintUp?: (pointerId: number) => void;
 }
 
 export default function Character({
@@ -40,15 +40,17 @@ export default function Character({
   const down = interactive
     ? (e: ThreeEvent<PointerEvent>) => {
         e.stopPropagation();
-        if (e.uv) onPaintDown?.(e.uv);
+        if (e.uv) onPaintDown?.(e.uv, e.pointerId);
       }
     : undefined;
   const move = interactive
     ? (e: ThreeEvent<PointerEvent>) => {
-        if (e.uv) onPaintMove?.(e.uv);
+        if (e.uv) onPaintMove?.(e.uv, e.pointerId);
       }
     : undefined;
-  const up = interactive ? () => onPaintUp?.() : undefined;
+  const up = interactive
+    ? (e: ThreeEvent<PointerEvent>) => onPaintUp?.(e.pointerId)
+    : undefined;
 
   return (
     <group>

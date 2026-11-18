@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { uvToPixel } from "../../lib/paint";
 import { PAINT_TEXTURE_SIZE } from "../../lib/constants";
+import {
+  CHARACTER_ATLAS,
+  atlasRegionPixels,
+  partForUv,
+  type CharacterPart,
+} from "../../lib/uvAtlas";
 
 /**
  * COLOR HIDE — paint engine (browser only).
@@ -27,7 +33,7 @@ export class PaintEngine {
   private readonly size: number;
   private readonly base: string;
   private undoStack: ImageData[] = [];
-  private last: { x: number; y: number } | null = null;
+  private last: { x: number; y: number; part: CharacterPart } | null = null;
 
   constructor(size = PAINT_TEXTURE_SIZE, base = "#f4f4f5") {
     this.size = size;
@@ -56,27 +62,45 @@ export class PaintEngine {
     this.last = null;
   }
 
-  /** Paints a round dab at the UV, connecting from the previous dab for smooth lines. */
+  /**
+   * Paints a round dab at the UV, connecting from the previous dab for smooth
+   * lines. Drawing is CLIPPED to the atlas quadrant of the part you touched, so a
+   * brush near an internal seam (e.g. head↔torso) can never bleed into the
+   * neighbouring part. The connecting line is drawn only when the previous dab
+   * was on the SAME part, so a fast drag across a seam doesn't streak a line
+   * through the atlas.
+   */
   paintAt(u: number, v: number, opts: BrushOptions): void {
     const { x, y } = uvToPixel(u, v, this.size);
+    const part = partForUv(u, v);
+    const rect = atlasRegionPixels(CHARACTER_ATLAS[part], this.size);
     const color = opts.erase ? this.base : opts.color;
-    this.ctx.fillStyle = color;
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = opts.radius * 2;
-    this.ctx.lineCap = "round";
-    this.ctx.lineJoin = "round";
+    const ctx = this.ctx;
 
-    if (this.last) {
-      this.ctx.beginPath();
-      this.ctx.moveTo(this.last.x, this.last.y);
-      this.ctx.lineTo(x, y);
-      this.ctx.stroke();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.clip();
+
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = opts.radius * 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (this.last && this.last.part === part) {
+      ctx.beginPath();
+      ctx.moveTo(this.last.x, this.last.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
     }
-    this.ctx.beginPath();
-    this.ctx.arc(x, y, opts.radius, 0, Math.PI * 2);
-    this.ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, opts.radius, 0, Math.PI * 2);
+    ctx.fill();
 
-    this.last = { x, y };
+    ctx.restore();
+
+    this.last = { x, y, part };
     this.texture.needsUpdate = true;
   }
 
