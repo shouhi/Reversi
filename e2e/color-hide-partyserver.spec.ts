@@ -1,6 +1,10 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { WebSocket } from "ws";
 import { spawn, type ChildProcess } from "node:child_process";
+import {
+  planInputSend,
+  type InputSample,
+} from "../src/games/color-hide/lib/inputSend";
 
 /**
  * COLOR HIDE — PartyServer / Cloudflare Durable Object integration test.
@@ -427,4 +431,84 @@ test("SPECTATOR over the DO: a caught hider no longer receives uncaught hiders' 
   seeker.close();
   hiderA.close();
   hiderB.close();
+});
+
+test("NETCODE: the hybrid send planner cuts inbound messages vs a fixed rate (real DO)", async ({
+  request,
+}) => {
+  // Real socket + real Durable Object (local workerd) measurement of Phase 9-E.
+  // 3 players so an ACTIVE-hider observer always sees the mover (teammates are
+  // mutually visible), letting us confirm the server still relays real movement.
+  const h = await createRoom(request, "H");
+  const g1 = await join(request, h.roomId, "MOVER");
+  const g2 = await join(request, h.roomId, "OBS");
+  const roomId = h.roomId as string;
+  await ready(request, roomId, h.token);
+  await ready(request, roomId, g1.body.token);
+  await ready(request, roomId, g2.body.token);
+  await start(request, roomId, h.token);
+
+  const started = await getRoom(request, roomId);
+  const seekerP = started.players.find((p: { role: string }) => p.role === "seeker");
+  const hiders = started.players.filter((p: { role: string }) => p.role === "hider");
+  const tokenOf = (id: string) =>
+    id === h.playerId ? h.token : id === g1.body.playerId ? g1.body.token : g2.body.token;
+  const moverP = hiders[0];
+  const obsP = hiders[1];
+
+  const seeker = await connect(roomId, seekerP.id, tokenOf(seekerP.id));
+  const mover = await connect(roomId, moverP.id, tokenOf(moverP.id));
+  const obs = await connect(roomId, obsP.id, tokenOf(obsP.id));
+  await mover.waitFor((c) => !!c.welcome);
+  await obs.waitFor((c) => !!c.welcome);
+  await waitForPhase(request, roomId, "seeking", 20000);
+
+  // Drive the mover through the REAL planInputSend over ~6s at ~60 fps:
+  // 2s still → 3s moving (+x) → 1s still. Count real socket sends, and count what
+  // a fixed-rate (~18 Hz nominal) client WOULD send over the identical timeline.
+  obs.snaps.length = 0;
+  let prevSent: InputSample | null = null;
+  let lastPlannerAt = 0;
+  let lastLegacyAt = -Infinity;
+  let plannerSends = 0;
+  let legacySends = 0;
+  const LEGACY_INTERVAL = 1000 / 18;
+  const t0 = Date.now();
+  const DURATION = 6000;
+  while (Date.now() - t0 < DURATION) {
+    const el = Date.now() - t0;
+    const moving = el >= 2000 && el < 5000;
+    const x = el < 2000 ? 0 : el < 5000 ? ((el - 2000) / 1000) * 2.5 : 7.5;
+    const cur: InputSample = { x, z: 3, yaw: 0, moving, running: false, pose: "stand" };
+    const now = Date.now();
+    if (now - lastLegacyAt >= LEGACY_INTERVAL) {
+      legacySends += 1;
+      lastLegacyAt = now;
+    }
+    const dtSince = prevSent ? now - lastPlannerAt : Infinity;
+    if (planInputSend(prevSent, cur, dtSince) !== "none") {
+      mover.input({ x, z: 3, yaw: 0, moving, running: false });
+      prevSent = cur;
+      lastPlannerAt = now;
+      plannerSends += 1;
+    }
+    await new Promise((r) => setTimeout(r, 1000 / 60));
+  }
+
+  const moverXs = obs.snaps
+    .map((s) => s.players.find((p) => p.id === moverP.id)?.x)
+    .filter((v): v is number => typeof v === "number");
+  const range = moverXs.length ? Math.max(...moverXs) - Math.min(...moverXs) : 0;
+  const reductionPct = legacySends ? (100 * (1 - plannerSends / legacySends)).toFixed(0) : "n/a";
+  console.log(
+    `[netcode] plannerSends=${plannerSends} legacySends=${legacySends} reduction=${reductionPct}% moverXrange=${range.toFixed(2)}`,
+  );
+
+  expect(range).toBeGreaterThan(1.0); // the real DO relayed genuine movement
+  expect(plannerSends).toBeGreaterThan(0);
+  expect(plannerSends).toBeLessThan(legacySends * 0.6); // ≥40% fewer inbound messages
+
+  seeker.close();
+  mover.close();
+  obs.close();
 });

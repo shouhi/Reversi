@@ -16,6 +16,7 @@ import { damp, dampAngle, shouldSnap } from "../../lib/animation";
 import { prefersReducedMotion } from "../../lib/motion";
 import { sharedAudio } from "../../lib/audio";
 import { moveSpeedFor } from "../../lib/balance";
+import { planInputSend, type InputSample } from "../../lib/inputSend";
 import AnimatedCharacter, { type CharacterAnimDriver } from "./AnimatedCharacter";
 import MapScene from "./MapScene";
 import { textureForPaint } from "./textures";
@@ -56,7 +57,6 @@ export interface GameSceneProps {
 
 const EYE = 1.5;
 const CAM_DIST = 4.4;
-const SEND_INTERVAL = 1000 / 18;
 const LOOK_SENS = 0.005;
 
 export default function GameScene(props: GameSceneProps) {
@@ -316,7 +316,9 @@ function SceneContents({
   const camYaw = useRef(0);
   const camPitch = useRef(0.25);
   const seq = useRef(0);
-  const sinceSend = useRef(0);
+  const lastSentAt = useRef(0);
+  const prevSent = useRef<InputSample | null>(null);
+  const lastStatus = useRef<string>("connecting");
 
   // Reusable temporaries (avoid per-frame allocation).
   const tmpTarget = useMemo(() => new THREE.Vector3(), []);
@@ -416,17 +418,38 @@ function SceneContents({
       if (canCatch) tryCatch(transport, pos.current, camYaw.current, snapshot.current);
     }
 
-    // --- send input (throttled) ---
-    sinceSend.current += dt * 1000;
-    if (sinceSend.current >= SEND_INTERVAL) {
-      sinceSend.current = 0;
+    // --- send input (Phase 9-E hybrid: event + steady-move + idle heartbeat) ---
+    // Local prediction above runs every frame; this governs only what reaches the
+    // server, cutting inbound WebSocket messages (the billed direction) without
+    // touching local responsiveness. On a (re)connection, drop the remembered sent
+    // sample so the authoritative pose is resynced immediately rather than after
+    // the heartbeat.
+    const connStatus = transport.status;
+    if (connStatus === "connected" && lastStatus.current !== "connected") {
+      prevSent.current = null;
+    }
+    lastStatus.current = connStatus;
+
+    const nowMs = performance.now();
+    const cur: InputSample = {
+      x: pos.current.x,
+      z: pos.current.z,
+      yaw: camYaw.current,
+      moving,
+      running: i.running,
+      pose,
+    };
+    const dtSince = prevSent.current ? nowMs - lastSentAt.current : Infinity;
+    if (planInputSend(prevSent.current, cur, dtSince) !== "none") {
+      lastSentAt.current = nowMs;
+      prevSent.current = cur;
       seq.current += 1;
       transport.sendInput({
         seq: seq.current,
-        t: performance.now(),
-        x: pos.current.x,
-        z: pos.current.z,
-        yaw: camYaw.current,
+        t: nowMs,
+        x: cur.x,
+        z: cur.z,
+        yaw: cur.yaw,
         pitch: 0,
         anim,
         pose,

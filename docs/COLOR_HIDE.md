@@ -566,3 +566,76 @@ Phase 9-D の変更（`net/realtime.ts`／`lib/balance.ts`／`lib/constants.ts`�
 - **順序（整合性維持）**：巻き戻しは **Vercel先（旧Client）→ Worker後（旧Worker）** が安全（「新Worker×旧Client」は許容、「旧Worker×新Client」は回避）。緊急時にまず止めたいだけなら `--stop` で新規接続遮断が最速。
 - **最終手段**：`wrangler delete`（全切断）は最後。**Redis本番データは削除しない**（DOは永続データ無し＝切断で位置情報のみ消失、ルーム状態はRedis権威で保持）。
 - **既存ゲーム**：別slug/API/Workerで分離＝ロールバック操作の影響なし。
+
+---
+
+# Phase 9-E — WebSocket通信最適化（netcode）（2026-11-18）
+
+**今回の実施範囲：調査・計測・ネットコード改善・テスト・ドキュメント・Draft PRのみ。** 本番Worker/Vercelデプロイ・mainマージ・Secret/Redis変更・Workers Paidは**未実施**。ブランチ `perf/color-hide-netcode`。
+
+## 9-E1 現状分析（変更前）
+Cloudflareは**受信（client→Worker）WebSocketメッセージを20:1で課金**（送信・pingは無料）。よってコストの律速は**各クライアントの送信頻度**。
+
+- **client → Worker（課金対象）**：旧クライアントは `GameScene` の `useFrame` で**固定18Hz**（`SEND_INTERVAL=1000/18`）を**無条件**送信。移動中も**停止中も同じ**。60fpsのフレームゲート＋accumulatorゼロリセットのため**実効は約15Hz**。変化検知・ハートビート区別・デッドゾーンなし。`seq` 単調増加（サーバーは `seq<=last` を破棄）。
+- **Worker → client（無料）**：`NET_TICK_HZ=15` の受信者別フィルタ済みスナップショットを毎tick全員へ。
+- **Worker → Vercel**：メタ更新2.5s間隔（失敗時指数バックオフ）、catch/authは稀。
+- **結論**：かくれんぼでは隠れ役が長時間静止するのに18Hz送信＝純粋な無駄。**最適化対象は送信頻度**。送信は「状態」同期（結果位置を送りサーバーが再検証）で、ワイヤ形式は `InputMsg`。
+
+## 9-E3/4 実装（ハイブリッド送信＋サーバーfailsafe・**プロトコル非変更**）
+- **`lib/inputSend.ts`（新規・純粋・単体テスト済）** `planInputSend(prev, cur, dtSince)`：
+  - **event**：移動開始/停止・走行・しゃがみ/ポーズ変化で即時（`INPUT_EVENT_MIN_INTERVAL_MS=50`＝20Hz上限でバースト抑制。**停止は最優先**で≤50msで送出、旧55msより速い）。
+  - **move**：連続移動/視点変更は位置/ヨーがデッドゾーン（`INPUT_POS_EPSILON=0.03` / `INPUT_YAW_EPSILON=0.02`）超過かつ `INPUT_MOVE_SEND_INTERVAL_MS=100`（10Hz）経過時のみ。
+  - **heartbeat**：無操作時は `INPUT_HEARTBEAT_MS=1000`（1Hz）でキープアライブ＋ロス後の再同期。
+  - 微小なアナログ揺れ（エプシロン未満）は送信しない。
+- **`GameScene.tsx`**：固定送信を `planInputSend` に置換。**ローカル予測は従来どおり毎フレーム**＝自分の操作感は不変。(再)接続時は送信済みサンプルを破棄し即再同期。
+- **サーバーfailsafe（`realtime.ts` tick）**：送信が疎になったため、**「停止」パケットがロスすると歩行/走行アニメが残る**恐れ。`INPUT_STALE_MS=2500` 無入力で移動アニメ（walk/run）を停止アニメへ矯正（`stoppedAnimFor`）。位置はそもそも入力なしでは動かない（サーバーは勝手に動かさない）ので**追加的・安全**。正常送信のクライアント（旧18Hz含む）では**決して発火しない**。
+- **セキュリティは不変**：`validateMove`（反テレポート・速度上限・鬼1.15×）、衝突・境界、捕獲距離/FOV/LOS、レート制限（40/s）、**観戦者の移動禁止**、**非公開プレイヤーのスナップショット除外**をすべて維持。
+
+## 9-E2/11 計測（実測 vs 試算を明示）
+**実測（measured）**
+- 送信レート（純粋プランナの決定論replay＝実コードで算出。受信==送信の1:1）：
+
+| 条件 | Before(実効) | After | 削減 |
+|---|---:|---:|---:|
+| 停止時 | 〜15 Hz | **〜1 Hz** | **−93%** |
+| 移動時 | 〜15 Hz | **〜10 Hz** | **−33%** |
+
+- **実ソケット（local workerd + 実WebSocket + 実DO）**：混在シナリオ（2s静止→3s移動→1s静止）で `plannerSends=32` vs `legacySends=87` ＝ **−63%**、観戦者スナップショットでmover移動量 range=1.71 を観測＝**サーバーが実移動を正しく中継**（操作感維持）。
+- 実ブラウザ（ローカル・local RT host）：2人ルームで鬼視点の3Dシーン描画・WS「接続済み」・WASD移動・視点ドラッグ・しゃがみ動作、**コンソールエラーなし**を確認。新マップ障害物も描画。
+
+**試算（estimate・活動プロファイルは仮定）** 5分=295s（preparing5/painting60/hiding30/seeking180/result20）。DO課金req = ⌈受信/20⌉ + 接続数。
+
+| 試合 | 受信(After) | 受信(Before) | DO req After | DO req Before | 削減 |
+|---|---:|---:|---:|---:|---:|
+| 2人 idle-heavy | 2,060 | 8,850 | 105 | 445 | −76% |
+| 6人 idle-heavy | 4,800 | 26,550 | 246 | 1,334 | −82% |
+| 2人 move-heavy | 5,370 | 8,850 | 271 | 445 | −39% |
+| 6人 move-heavy | 16,110 | 26,550 | 812 | 1,334 | −39% |
+
+## 9-E6 Cloudflare Freeプラン（点-in-time 2026-11-18・launch前要再確認）
+Free：Workers 100,000 req/日、**DO 100,000 req/日**＋13,000 GB-s/日、WS受信20:1・送信/ping無料。
+- **1日の試合数上限（6人 idle-heavy・DO req律速）**：After **〜406試合/日** vs Before 〜74試合/日（**約5.5倍**の余裕）。
+- **悪条件（6人 move-heavy）**でも After **〜123試合/日** vs Before 〜74。
+- 月間（6人 idle-heavy）：1,000試合＝After 246,000 req / Before 1,334,000 req。
+- **誇張しない**：pathological（毎フレームで走行/しゃがみ連打）なら event上限20Hzに達し旧15Hzを上回り得るが、非人間的操作であり**40/s のレート制限が従来どおり上限を担保**（新たな濫用面はない）。duration課金は `stopTick`（最終接続切断で停止）のまま。
+
+## 9-E8 バージョン互換性（**プロトコル非変更＝両方向安全**）
+ワイヤ形式（`InputMsg`/スナップショット）不変・新メッセージ型なし。差は送信頻度＋サーバーの加算的anim failsafe（正常送信では無発火）だけ。
+
+| | 旧Client | 新Client |
+|---|---|---|
+| 旧Worker | ✅現状 | ✅ 新Clientは送信が疎になるだけ／旧Workerは可変入力タイミングを従来どおり処理 |
+| 新Worker | ✅ 旧Clientは18Hz送信＝failsafe無発火・従来挙動 | ✅ 最適（全テスト合格） |
+
+→ **Worker先行・Client先行どちらでも安全**。既存タブが旧Clientのまま残っても問題なし。これがPhase 9-D（サーバー権威の修正が載るため順序制約あり）との大きな違い。
+
+## 9-E RELEASE PLAN（要承認・未実行）
+段階的公開は不要（どちらの順序でも安全）が、慣例どおり：
+1. `./deploy-production.sh`（dry-run）→ `--go`（Worker更新。anim failsafeが入る）。
+2. `curl .../health`=ok。
+3. PR `perf/color-hide-netcode` を main へマージ → Vercel自動デプロイ（新Client）。
+4. 公開後スモーク（移動/停止の即応・6人・観戦漏洩なし・既存ゲーム）＋Cloudflare利用量が低下していることを数日観測。
+ロールバックはPhase 9-Dと同様（Worker `wrangler rollback` / Vercel Instant Rollback）。どの中間状態も互換なので緊急時の順序制約は緩い。
+
+## 9-E 品質ゲート（全PASS・ローカル）
+typecheck / cf:typecheck / lint / **vitest 543**（新 inputSend 16・realtime failsafe+spectator-move 等）/ build / **test:e2e 26** / **test:partyserver 11**（新 netcode 実測 −63% 含む）。テストの削除・無効化・スキップなし。
