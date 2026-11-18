@@ -45,6 +45,23 @@ describe("commitPaint — save path", () => {
     expect(await getPaints(store, "room1")).toEqual({});
   });
 
+  it("rematch: a later commit overwrites the carried-over paint (latest-wins, per-commit)", async () => {
+    // Paint is per-room (not per-round), so a prior round's design carries over as
+    // the editing start point. A fresh commit in the next round must replace it —
+    // the previous save never silently becomes the new round's confirmed paint.
+    const store = freshStore();
+    const prev = pngDataUrl(512);
+    const next = pngDataUrl(4096); // different body length → distinguishable
+    expect((await commitPaint(store, "room1", "p1", prev, 1000)).ok).toBe(true);
+    expect((await getPaints(store, "room1")).p1).toBe(prev);
+    // A rematch happens; the player repaints and re-commits (well past the rate gate).
+    const re = await commitPaint(store, "room1", "p1", next, 1000 + PAINT_COMMIT_MIN_INTERVAL_MS + 60_000);
+    expect(re.ok).toBe(true);
+    const after = await getPaints(store, "room1");
+    expect(after.p1).toBe(next); // new round's save wins
+    expect(after.p1).not.toBe(prev);
+  });
+
   it("rejects a disallowed format (svg can carry script)", async () => {
     const store = freshStore();
     const res = await commitPaint(store, "room1", "p1", "data:image/svg+xml;base64,QUJD", 1000);

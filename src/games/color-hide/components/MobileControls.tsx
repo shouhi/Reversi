@@ -27,6 +27,16 @@ export default function MobileControls({
   const activeId = useRef<number | null>(null);
   const RADIUS = 46;
 
+  // setPointerCapture throws if the pointer isn't currently active (edge races /
+  // non-real pointers); capturing is a best-effort nicety, so never let it throw.
+  const capture = (e: React.PointerEvent) => {
+    try {
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* pointer already released — capture is optional */
+    }
+  };
+
   const updateStick = (clientX: number, clientY: number) => {
     const base = baseRef.current;
     if (!base) return;
@@ -39,17 +49,22 @@ export default function MobileControls({
     }
   };
 
-  const resetStick = () => {
+  const resetStick = (e: React.PointerEvent) => {
+    // Only the finger that owns the stick may release it (multi-touch safety).
+    if (activeId.current !== null && e.pointerId !== activeId.current) return;
     input.current.move.x = 0;
     input.current.move.y = 0;
     activeId.current = null;
     if (knobRef.current) knobRef.current.style.transform = "translate(-50%, -50%)";
   };
 
-  // Common handler set for action buttons: never let a tap also rotate the camera.
+  // Common handler set for action buttons: never let a tap also rotate the camera,
+  // and CAPTURE the pointer so a finger that slides off the button still fires
+  // pointerup on it — otherwise a held "run"/"crouch" could get stuck on (Phase 11).
   const hold = (on: () => void, off?: () => void) => ({
     onPointerDown: (e: React.PointerEvent) => {
       e.stopPropagation();
+      capture(e);
       on();
     },
     onPointerUp: off
@@ -61,6 +76,11 @@ export default function MobileControls({
     onPointerCancel: off
       ? (e: React.PointerEvent) => {
           e.stopPropagation();
+          off();
+        }
+      : undefined,
+    onLostPointerCapture: off
+      ? () => {
           off();
         }
       : undefined,
@@ -76,8 +96,9 @@ export default function MobileControls({
         ref={baseRef}
         onPointerDown={(e) => {
           e.stopPropagation();
+          if (activeId.current !== null) return; // one finger owns the stick at a time
           activeId.current = e.pointerId;
-          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+          capture(e);
           updateStick(e.clientX, e.clientY);
         }}
         onPointerMove={(e) => {

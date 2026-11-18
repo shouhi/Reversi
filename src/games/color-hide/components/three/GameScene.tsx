@@ -392,7 +392,10 @@ export default function GameScene(props: GameSceneProps) {
       <Canvas
         shadows={shadowsFor(quality)}
         camera={{ fov: 60, near: 0.1, far: 120 }}
-        dpr={dprFor(quality)}
+        // Phase 11: while the paint overlay is open the world is frozen (input
+        // locked) and dimmed behind the overlay, so render it at dpr 1 to cut the GPU
+        // cost of running two canvases at once. The world stays visible.
+        dpr={props.inputLocked ? 1 : dprFor(quality)}
       >
         <SceneContents {...props} input={input} gamepad={gpRef} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} followSeeker={followSeeker} />
       </Canvas>

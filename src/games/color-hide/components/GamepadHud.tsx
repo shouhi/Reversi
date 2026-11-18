@@ -87,9 +87,12 @@ export default function GamepadHud({
           </label>
 
           <div className="mt-2 border-t border-line pt-2 text-[11px] leading-relaxed text-muted">
-            左スティック：移動 / 右スティック：カメラ / ZR：走る / ZL：しゃがむ / X：ペイント / Y：ポーズ / A：捕まえる（鬼）/ B：閉じる
+            左スティック：移動 / 右スティック：カメラ / ZR：走る / ZL：しゃがむ
+            <br />
+            左ボタン：ペイント / 上ボタン：ポーズ / 下ボタン：捕まえる（鬼）/ 右ボタン：閉じる
             <div className="mt-1 opacity-80">
-              ※ボタン配置は標準マッピング準拠。機種により表記が異なる場合があります。
+              ※標準マッピングの「位置」基準です。Switch Pro Controller の表記では
+              左=Y・上=X・下=B・右=A に対応する見込みですが、実機未確認です。
             </div>
           </div>
         </div>
