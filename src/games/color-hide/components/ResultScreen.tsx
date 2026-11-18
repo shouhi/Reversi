@@ -61,7 +61,13 @@ export default function ResultScreen({ roomId, state, me, onChanged }: ResultScr
         <h2 className="mt-2 text-3xl font-bold text-ink">
           {hidersWon ? "🙈 隠れる側の勝利！" : "👀 鬼の勝利！"}
         </h2>
-        <p className="mt-2 text-sm text-muted">
+        {/* Why this outcome — so the result is never just a bare win/lose. */}
+        <p className="mt-2 text-sm text-ink/80">
+          {hidersWon
+            ? `制限時間まで ${result.survivors.length} 人が逃げ切りました。`
+            : "鬼が全員を見つけました。"}
+        </p>
+        <p className="mt-1 text-sm text-muted">
           鬼：{nameOf(result.seekerId)}
         </p>
 

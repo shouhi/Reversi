@@ -143,6 +143,15 @@ export default function RoundView({
         </span>
       </div>
 
+      {/* Spectator mode: a hider who has been caught watches until the round ends.
+          For fairness the server does NOT send them uncaught teammates' positions,
+          so we say so plainly rather than leaving the player confused. */}
+      {amICaught && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-center text-sm text-amber-200">
+          👻 観戦モード — 見つかりました。鬼と捕まった仲間だけ見えます（公平性のため、逃げている仲間の位置は表示されません）。このラウンド終了まで観戦できます。
+        </div>
+      )}
+
       <div className="relative">
         {transport ? (
           <GameScene
@@ -151,6 +160,7 @@ export default function RoundView({
             myRole={myRole}
             canMove={canMove}
             canCatch={canCatch}
+            spectating={amICaught}
             transport={transport}
             roster={roster}
             paints={paints}

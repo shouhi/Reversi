@@ -15,11 +15,7 @@ import { clampLookDelta } from "../../lib/touchInput";
 import { damp, dampAngle, shouldSnap } from "../../lib/animation";
 import { prefersReducedMotion } from "../../lib/motion";
 import { sharedAudio } from "../../lib/audio";
-import {
-  CROUCH_SPEED_MULT,
-  RUN_SPEED,
-  WALK_SPEED,
-} from "../../lib/constants";
+import { moveSpeedFor } from "../../lib/balance";
 import AnimatedCharacter, { type CharacterAnimDriver } from "./AnimatedCharacter";
 import MapScene from "./MapScene";
 import { textureForPaint } from "./textures";
@@ -50,6 +46,8 @@ export interface GameSceneProps {
   canMove: boolean;
   /** Whether the seeker may catch right now (seeking phase). */
   canCatch: boolean;
+  /** This player has been caught and is now a spectator (no movement/catch). */
+  spectating?: boolean;
   transport: RealtimeTransport;
   roster: RosterEntry[];
   paints: Record<string, string>;
@@ -74,6 +72,8 @@ export default function GameScene(props: GameSceneProps) {
   );
   const [quality] = useState(detectQuality);
   const [poseLabel, setPoseLabel] = useState<Pose>("stand");
+  // Spectator camera: follow the (public) seeker, or free-look from where caught.
+  const [followSeeker, setFollowSeeker] = useState(true);
 
   // Live snapshot (visibility-filtered by the server) + caught set, updated from
   // the realtime channel. Kept in refs so the frame loop reads without re-render.
@@ -202,8 +202,24 @@ export default function GameScene(props: GameSceneProps) {
         camera={{ fov: 60, near: 0.1, far: 120 }}
         dpr={dprFor(quality)}
       >
-        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} />
+        <SceneContents {...props} input={input} snapshot={snapshot} caught={caught} quality={quality} reducedMotion={reducedMotion} followSeeker={followSeeker} />
       </Canvas>
+
+      {/* Spectator badge + camera toggle (only for a caught player). */}
+      {props.spectating && (
+        <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
+          <span className="rounded-md bg-black/60 px-2 py-1 text-xs font-semibold text-amber-200 ring-1 ring-amber-400/40">
+            👻 観戦中
+          </span>
+          <button
+            type="button"
+            onClick={() => setFollowSeeker((v) => !v)}
+            className="rounded-md bg-black/50 px-2 py-1 text-xs text-white ring-1 ring-white/20"
+          >
+            {followSeeker ? "🎥 鬼を追う" : "🔄 自由視点"}
+          </button>
+        </div>
+      )}
 
       {/* Brief catch flash (skipped under reduced-motion). Non-blocking. */}
       {flash && (
@@ -269,6 +285,7 @@ interface ContentsProps extends GameSceneProps {
   caught: Set<string>;
   quality: Quality;
   reducedMotion: boolean;
+  followSeeker: boolean;
 }
 
 function SceneContents({
@@ -277,6 +294,7 @@ function SceneContents({
   myRole,
   canMove,
   canCatch,
+  spectating,
   transport,
   roster,
   paints,
@@ -285,6 +303,7 @@ function SceneContents({
   caught,
   quality,
   reducedMotion,
+  followSeeker,
 }: ContentsProps) {
   const map = useMemo(() => getMap(mapId), [mapId]);
   const myTexture = useMemo(() => textureForPaint(paints[myId]), [paints, myId]);
@@ -327,7 +346,7 @@ function SceneContents({
     if (moving) {
       mx /= Math.max(1, mlen);
       my /= Math.max(1, mlen);
-      const base = pose === "stand" ? (i.running ? RUN_SPEED : WALK_SPEED) : WALK_SPEED * CROUCH_SPEED_MULT;
+      const base = moveSpeedFor(myRole, { running: i.running, crouched: pose !== "stand" });
       const vx = (fwd.x * my + right.x * mx) * base * dt;
       const vz = (fwd.z * my + right.z * mx) * base * dt;
       pos.current = resolveMove(
@@ -359,7 +378,20 @@ function SceneContents({
     if (poseGroup.current) applyPoseVisual(poseGroup.current, pose);
 
     // --- third-person camera with occlusion pull-in ---
-    tmpTarget.set(pos.current.x, EYE, pos.current.z);
+    // Spectators (caught) can follow the seeker (a public position from the
+    // snapshot); otherwise the camera frames the player's own position.
+    let camTargetX = pos.current.x;
+    let camTargetZ = pos.current.z;
+    if (spectating && followSeeker) {
+      for (const p of snapshot.current.values()) {
+        if (p.role === "seeker") {
+          camTargetX = p.x;
+          camTargetZ = p.z;
+          break;
+        }
+      }
+    }
+    tmpTarget.set(camTargetX, EYE, camTargetZ);
     const cp = Math.cos(camPitch.current);
     const back = new THREE.Vector3(-Math.sin(camYaw.current), 0, Math.cos(camYaw.current));
     let dist = CAM_DIST;

@@ -92,6 +92,12 @@ export interface RoomState {
   players: PlayerRecord[];
   /** The seeker's player id for the active round, or null in the lobby. */
   seekerId: string | null;
+  /**
+   * The previous round's seeker, remembered across the lobby reset so the next
+   * round can avoid immediately re-picking the same player (fair role rotation).
+   * Optional for backward-compat with records written before this field existed.
+   */
+  prevSeekerId?: string | null;
   /** Round number, incremented each time a round starts. */
   round: number;
   /** Last finished round's outcome (shown during `result`). */
