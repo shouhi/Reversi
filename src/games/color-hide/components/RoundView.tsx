@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import GameScene from "./three/GameScene";
 import PaintStudio from "./paint/PaintStudio";
+import GamepadHud from "./GamepadHud";
+import { useGamepad } from "../hooks/useGamepad";
 import { clearTextureCache } from "./three/textures";
 import { createWsTransport, resolveWsUrl } from "../net/wsTransport";
 import type { ConnectionStatus, RealtimeTransport } from "../net/transport";
@@ -40,6 +42,9 @@ export default function RoundView({
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const transportRef = useRef<RealtimeTransport | null>(null);
   const [transport, setTransport] = useState<RealtimeTransport | null>(null);
+
+  // Phase 10 — gamepad connection status + persisted settings (SSR-safe).
+  const { connection, settings: gamepadSettings, setSettings: setGamepadSettings } = useGamepad();
 
   // Phase 10 — in-world paint overlay state (hiders, during the hiding phase).
   const [paintOpen, setPaintOpen] = useState(false);
@@ -157,6 +162,11 @@ export default function RoundView({
           あなた：{myRole === "seeker" ? "鬼" : amICaught ? "見つかった…" : "隠れる側"}
         </span>
         <span className="text-sm text-muted">生存 {alive}/{hiders.length}</span>
+        <GamepadHud
+          connection={connection}
+          settings={gamepadSettings}
+          setSettings={setGamepadSettings}
+        />
         <span className="flex items-center gap-2">
           <span
             className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-xs ring-1 ring-line ${
@@ -206,6 +216,13 @@ export default function RoundView({
             canCatch={canCatch}
             spectating={amICaught}
             inputLocked={paintOpen}
+            paintAvailable={canPaint}
+            onRequestPaint={() => {
+              setPaintOpen(true);
+              sharedAudio().play("ui");
+            }}
+            onClosePaint={() => setPaintOpen(false)}
+            gamepadSettings={gamepadSettings}
             transport={transport}
             roster={roster}
             paints={paints}

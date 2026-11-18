@@ -8,6 +8,11 @@ import { PaintEngine } from "./PaintEngine";
 import { detectQuality, dprFor } from "../../lib/quality";
 import { sharedAudio } from "../../lib/audio";
 import type { PaletteSwatch } from "../../lib/maps";
+import {
+  EdgeDetector,
+  loadGamepadSettings,
+  readStandardGamepad,
+} from "../../lib/gamepad";
 
 /**
  * The character paint studio. Rotate the body and paint directly on its surface
@@ -73,6 +78,11 @@ export default function PaintStudio({
   const [spin, setSpin] = useState(0);
   const [, setUndoTick] = useState(0);
   const [quality] = useState(detectQuality);
+  // Phase 10 gamepad-only quick camouflage: d-pad picks a surrounding swatch,
+  // A fills the character with it, Y saves. (Open/close is handled by GameScene.)
+  const [padActive, setPadActive] = useState(false);
+  const [padSwatch, setPadSwatch] = useState(0);
+  const padSwatchRef = useRef(0);
   const painting = useRef(false);
   // Track the ONE pointer that owns the active stroke, so a second finger
   // (e.g. a pinch-zoom) never starts or hijacks a second stroke.
@@ -99,6 +109,73 @@ export default function PaintStudio({
       onCommit(engine.toDataURL());
     }
   }, [autoCommit, engine, onCommit]);
+
+  // Phase 10: gamepad-only quick camouflage inside the overlay. A full free-draw
+  // still needs mouse/touch, but a pad alone can pick a surrounding colour (d-pad)
+  // and paint the whole character with it (A), then save (Y) — enough to blend in.
+  // onCommit / surroundingColors are mirrored to refs so this effect depends only on
+  // `engine` and never tears down + rebuilds its edge detectors on a parent re-render
+  // (the countdown re-renders ~1/s) — which would let a HELD button re-fire.
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const surroundingRef = useRef(surroundingColors);
+  surroundingRef.current = surroundingColors;
+  useEffect(() => {
+    if (!engine || typeof navigator === "undefined" || !("getGamepads" in navigator)) return;
+    const settings = loadGamepadSettings();
+    const dl = new EdgeDetector();
+    const dr = new EdgeDetector();
+    const btnA = new EdgeDetector();
+    const btnY = new EdgeDetector();
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const pads = navigator.getGamepads?.() ?? [];
+      let pad: Gamepad | null = null;
+      for (const p of pads) {
+        if (p && p.connected) {
+          pad = p;
+          break;
+        }
+      }
+      const r = pad
+        ? readStandardGamepad(
+            {
+              mapping: pad.mapping,
+              axes: pad.axes,
+              buttons: pad.buttons.map((b) => ({ pressed: b.pressed, value: b.value })),
+            },
+            settings,
+          )
+        : null;
+      if (!r) return;
+      setPadActive(true);
+      const swatches = surroundingRef.current ?? []; // read fresh each frame (stable effect)
+      if (swatches.length) {
+        if (dl.fire(r.dpad.left)) {
+          padSwatchRef.current = (padSwatchRef.current - 1 + swatches.length) % swatches.length;
+          setPadSwatch(padSwatchRef.current);
+        }
+        if (dr.fire(r.dpad.right)) {
+          padSwatchRef.current = (padSwatchRef.current + 1) % swatches.length;
+          setPadSwatch(padSwatchRef.current);
+        }
+        if (btnA.fire(r.buttons.confirm)) {
+          const sw = swatches[padSwatchRef.current];
+          if (sw) {
+            setColor(sw.color);
+            setErase(false);
+            engine.fill(sw.color);
+            setUndoTick((n) => n + 1);
+            sharedAudio().play("paintStroke");
+          }
+        }
+      }
+      if (btnY.fire(r.buttons.pose)) onCommitRef.current?.(engine.toDataURL());
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [engine]);
 
   // End the stroke even if the pointer is released off the model, or the browser
   // cancels it (pointercancel — common on touch when a gesture is taken over).
@@ -206,7 +283,7 @@ export default function PaintStudio({
               周囲の色（タップで吸い取り）
             </div>
             <div className="flex gap-2">
-              {surroundingColors.map((s) => (
+              {surroundingColors.map((s, idx) => (
                 <button
                   key={s.key}
                   type="button"
@@ -214,7 +291,9 @@ export default function PaintStudio({
                     setColor(s.color);
                     setErase(false);
                   }}
-                  className="flex flex-1 flex-col items-center gap-1 rounded-md bg-raised p-1.5 ring-1 ring-line"
+                  className={`flex flex-1 flex-col items-center gap-1 rounded-md bg-raised p-1.5 ring-1 ${
+                    padActive && padSwatch === idx ? "ring-2 ring-accent" : "ring-line"
+                  }`}
                   aria-label={`${s.label}の色 ${s.color}`}
                 >
                   <span
@@ -229,6 +308,11 @@ export default function PaintStudio({
                 </button>
               ))}
             </div>
+            {padActive && (
+              <div className="mt-1 text-[11px] text-muted">
+                🎮 十字キーで色を選び、Aで全身に塗る／Yで保存
+              </div>
+            )}
           </div>
         )}
 
