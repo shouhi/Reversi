@@ -264,10 +264,24 @@ export default function RoundView({
                 <span className="text-sm font-semibold text-ink">
                   🎨 その場でペイント — 周囲の色に溶け込もう
                 </span>
-                <span className="rounded bg-raised px-2 py-0.5 text-sm font-bold tabular-nums text-ink ring-1 ring-line">
+                <span
+                  className={`rounded px-2 py-0.5 text-sm font-bold tabular-nums ring-1 ${
+                    seconds != null && seconds <= 10 && seconds > 0
+                      ? "bg-red-500/20 text-red-300 ring-red-500/40"
+                      : "bg-raised text-ink ring-line"
+                  }`}
+                >
                   {seconds ?? "—"}s
                 </span>
               </div>
+              {/* Phase 11: reassure on rematch that the previous design is the start
+                  point and how to reset; also that time-up auto-saves. */}
+              <p className="mb-2 text-[11px] text-muted">
+                {paints[me.id]
+                  ? "前回の絵から編集できます（「全消去」でリセット）。"
+                  : "周囲の色を選んで全身を塗ると手早く擬態できます。"}
+                時間切れでも自動保存されます。
+              </p>
               <PaintStudio
                 initialDataUrl={paints[me.id] ?? null}
                 surroundingColors={mapPalette(state.mapId)}

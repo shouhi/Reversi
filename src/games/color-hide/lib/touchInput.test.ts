@@ -19,6 +19,18 @@ describe("stickVector", () => {
     const v = stickVector(1000, 1000, rect); // far past the corner
     expect(Math.hypot(v.x, v.y)).toBeCloseTo(1);
   });
+  it("applies a radial deadzone near the centre (Phase 11)", () => {
+    // 0.12 of the radius from centre → inside the 0.18 deadzone → no movement.
+    expect(stickVector(56, 50, rect)).toEqual({ x: 0, y: 0 });
+    expect(stickVector(50, 56, rect)).toEqual({ x: 0, y: 0 });
+    // Just past the deadzone registers, but rescaled below the raw offset (smooth ramp).
+    const v = stickVector(70, 50, rect); // raw 0.4 to the right
+    expect(v.x).toBeGreaterThan(0);
+    expect(v.x).toBeLessThan(0.4);
+    expect(v.y).toBe(0);
+    // Full deflection still reaches magnitude 1.
+    expect(stickVector(100, 50, rect)).toEqual({ x: 1, y: 0 });
+  });
 });
 
 describe("knobOffset", () => {

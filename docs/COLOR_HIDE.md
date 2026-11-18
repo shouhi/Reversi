@@ -748,3 +748,38 @@ Keyboard / Gamepad / Touch を**共通の入力モデル**（`GameScene` の `Ga
 
 ## 残課題（追加）
 物理コントローラー実機検証（Pro Controller/Joy-Con のボタン物理ラベル対応）。単体Joy-Con/非standardマッピングは非対応扱い。ペイントの完全パッド自由描画は非対応（簡易擬態＝色選択+全身塗りで代替、自由描画はマウス/タッチ）。
+
+---
+
+# Phase 11 — 実機対応・操作性総仕上げ（2026-11-18）
+
+**範囲：操作性/安定性のポリッシュのみ（新機能なし）。実装・検証・Draft PR。** 本番Worker/Vercelデプロイ・mainマージ・Secret/Redis変更は未実施。ブランチ `feat/color-hide-phase11-polish`。**サーバー/ネットコード/プロトコルは無変更**（`realtime.ts`/`phases.ts`/paint route/`roomService`/`protocol.ts` 不変）＝サーバー権威・観戦情報保護・通信最適化を完全維持。
+
+## スマホ操作（11-B）
+- **スティックにデッドゾーン**（`touchInput.ts` `STICK_DEADZONE=0.18`・ラジアル・リスケール。中心=0/全倒し=1は不変）＝指が中心から少しズレても誤移動しない。斜め正規化は従来どおり。
+- **走る/しゃがむ/ポーズ/捕まえる ボタンの押しっぱなし防止**（`MobileControls.tsx`）：pointerdownで `setPointerCapture`（try/catchで保護）＋`onLostPointerCapture→off()`。指がボタンから滑り出ても必ず解放され「走りっぱなし」にならない。
+- **スティックの多指乗っ取り防止**：取得中は2本目の指を無視（`activeId` 保持）／解放はowner pointerIdのみ。
+- 移動（左スティック）とカメラ（右スワイプ＝GameSceneの単一lookPointer、stick/ボタンはstopPropagation）の同時操作は従来どおり。
+
+## コントローラー（11-D）
+- Gamepadガイドを **Xbox表記(X/A/B/Y)→位置表記(左/上/下ボタン)** に変更＋「Switch Pro では 左=Y・上=X・下=B・右=A の見込み（実機未確認）」と明記＝表示と実挙動の食い違いを解消。機能割当（WEST=ペイント等）は不変。
+- Gamepadのデッドゾーン/感度/反転/立ち上がり検出/切断リセット/パッドのみ擬似（十字で色選択→A全身塗り→Y保存）はPhase 10実装を維持。
+
+## ペイントUX / 再戦（11-C/11-E）
+- 残り時間がオーバーレイでも**残り10秒で赤表示**／「時間切れでも自動保存」「前回の絵から編集（全消去でリセット）」のヒントを追加。
+- **再戦**：ペイントは `color-hide:paint:<roomId>` でラウンド非依存＝前回デザインが編集開始時の初期状態として表示（`initialDataUrl`）、上書き可、`全消去`でリセット。各コミットは個別認証＋フェーズゲート（seeking/result は409）。**前ラウンドの保存が新ラウンドの確定保存として誤適用されない**（コミットは各ラウンドのhiding中のみ・latest-wins）。名前空間変更なし＝後方互換。paintServiceに再戦テスト追加。
+
+## 性能（11-G）
+- ペイントオーバーレイ中は背景ワールドCanvasを **dpr=1** に下げる（inputLocked時＝ローカル操作凍結・暗転背景なので不可視、2Canvas同時のGPU負荷を軽減）。**ワールドは消さない**。品質ティアは維持。
+- GPU解放確認：ラウンド離脱で `clearTextureCache`、PaintStudioアンマウントで `PaintEngine.dispose`（既存・維持）。
+
+## テスト（全ゲートPASS・ローカル）
+typecheck / cf:typecheck / lint / **vitest 566**（touch deadzone・paint再戦 追加）/ build / **test:e2e 28** / **test:partyserver 11**（2人ラウンド・6人接続・クロスルーム分離・観戦漏洩なし・seeker-blind をカバー＝11-F多人数セキュリティ）。削除・スキップなし。独立レビュー：**SAFE TO MERGE**。
+
+## 検証の区別（実機/エミュ/モック）
+- **実ブラウザ（ローカル隔離）**：タッチ注入＋仮想ジョイスティックで**キャラ移動を実確認**（デッドゾーン適用）。ペイントオーバーレイ・擬態・接続バッジはPhase 10/11で確認。
+- **モック**：Gamepadは単体15テスト＋Phase 10のモック注入で確認。
+- **未検証（実機なし）**：物理 Switch Pro Controller/Joy-Con、スマホ実機、真のマルチタッチ（2指同時）、本番相当の低性能端末FPS。**MCPブラウザはmobile幅ビューポートのレンダリングを再現できず**（window resizeは効くがレンダリング幅はデスクトップ）、レスポンシブ縦積みレイアウトの実描画は未確認（CSS実装のみ）。
+
+## 残課題
+物理コントローラー/スマホ実機/低性能端末FPS/真のマルチタッチの実機検証（チェックリストとして残置）。Switch物理ABXY対応は実機確認が必要。

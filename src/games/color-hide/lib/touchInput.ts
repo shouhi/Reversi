@@ -18,20 +18,39 @@ function nz(v: number): number {
 }
 
 /**
- * Normalized move vector for a joystick: (0,0) at the base center, magnitude
- * clamped to 1 at/after the edge. Y is inverted so screen-up = forward (+y).
+ * Radial deadzone for the virtual stick (Phase 11). A thumb resting slightly off
+ * the base centre — common on touch — should read as "not moving", and control
+ * should ramp smoothly from 0 just past the threshold (no sudden jump). Centre
+ * stays exactly (0,0) and full deflection stays magnitude 1, so the existing
+ * geometry tests are unchanged.
  */
-export function stickVector(clientX: number, clientY: number, rect: Rect): { x: number; y: number } {
+export const STICK_DEADZONE = 0.18;
+
+/**
+ * Normalized move vector for a joystick: (0,0) at the base center, magnitude
+ * clamped to 1 at/after the edge, with a radial deadzone near the centre. Y is
+ * inverted so screen-up = forward (+y).
+ */
+export function stickVector(
+  clientX: number,
+  clientY: number,
+  rect: Rect,
+  deadzone: number = STICK_DEADZONE,
+): { x: number; y: number } {
   const cx = rect.left + rect.width / 2;
   const cy = rect.top + rect.height / 2;
   let dx = (clientX - cx) / (rect.width / 2);
   let dy = (clientY - cy) / (rect.height / 2);
-  const len = Math.hypot(dx, dy);
+  let len = Math.hypot(dx, dy);
   if (len > 1) {
     dx /= len;
     dy /= len;
+    len = 1;
   }
-  return { x: nz(dx), y: nz(-dy) };
+  if (len <= deadzone || len === 0) return { x: 0, y: 0 };
+  // Rescale (deadzone..1] → (0..1] so motion starts smoothly past the threshold.
+  const k = (len - deadzone) / (1 - deadzone) / len;
+  return { x: nz(dx * k), y: nz(-dy * k) };
 }
 
 /** Pixel offset of the knob from center, clamped to the base radius (for display). */
