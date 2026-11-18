@@ -6,6 +6,7 @@ import { OrbitControls, ContactShadows } from "@react-three/drei";
 import Character from "../three/Character";
 import { PaintEngine } from "./PaintEngine";
 import { detectQuality, dprFor } from "../../lib/quality";
+import { sharedAudio } from "../../lib/audio";
 
 /**
  * The character paint studio. Rotate the body and paint directly on its surface
@@ -105,6 +106,7 @@ export default function PaintStudio({
     engine.beginStroke();
     engine.paintAt(uv.x, uv.y, { color, radius, erase });
     painting.current = true;
+    sharedAudio().play("paintStroke"); // throttled by the engine
     bump();
   };
   const paintMove = (uv: { x: number; y: number }, pointerId: number) => {

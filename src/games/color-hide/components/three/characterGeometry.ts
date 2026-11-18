@@ -15,11 +15,23 @@ import {
  * player costs one material, not new meshes. Floor is y=0; the body is ~1.8 tall.
  */
 
+/** A swingable limb, for the animated rig (arms/legs pivot from a joint). */
+export type LimbId = "legL" | "legR" | "armL" | "armR";
+
 export interface CharacterPartMesh {
   part: CharacterPart;
   geometry: THREE.BufferGeometry;
   position: [number, number, number];
   rotation?: [number, number, number];
+  /**
+   * For limbs only: the joint (shoulder/hip) the limb swings from, in body-local
+   * space. The animated rig wraps the mesh in a pivot group at this point so a
+   * walk/run swing rotates from the joint, not the mesh centre. Omitted for the
+   * head/torso (they don't swing). `position - joint` gives the mesh's offset
+   * inside the pivot, so at rest (zero swing) the character looks identical.
+   */
+  limb?: LimbId;
+  joint?: [number, number, number];
 }
 
 function remapGeometry(
@@ -48,11 +60,11 @@ export function getCharacterParts(): CharacterPartMesh[] {
   const legR = remapGeometry(new THREE.CapsuleGeometry(0.15, 0.45, 6, 12), "legs");
 
   cached = [
-    { part: "legs", geometry: legL, position: [-0.18, 0.33, 0] },
-    { part: "legs", geometry: legR, position: [0.18, 0.33, 0] },
+    { part: "legs", geometry: legL, position: [-0.18, 0.33, 0], limb: "legL", joint: [-0.18, 0.66, 0] },
+    { part: "legs", geometry: legR, position: [0.18, 0.33, 0], limb: "legR", joint: [0.18, 0.66, 0] },
     { part: "torso", geometry: torso, position: [0, 1.0, 0] },
-    { part: "arms", geometry: armL, position: [-0.5, 1.02, 0], rotation: [0, 0, 0.28] },
-    { part: "arms", geometry: armR, position: [0.5, 1.02, 0], rotation: [0, 0, -0.28] },
+    { part: "arms", geometry: armL, position: [-0.5, 1.02, 0], rotation: [0, 0, 0.28], limb: "armL", joint: [-0.46, 1.34, 0] },
+    { part: "arms", geometry: armR, position: [0.5, 1.02, 0], rotation: [0, 0, -0.28], limb: "armR", joint: [0.46, 1.34, 0] },
     { part: "head", geometry: head, position: [0, 1.62, 0] },
   ];
   return cached;

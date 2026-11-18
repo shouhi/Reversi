@@ -11,6 +11,7 @@ import {
 import { allMaps } from "../lib/maps";
 import { MAX_PLAYERS, MIN_PLAYERS } from "../lib/constants";
 import { getQualityPref, setQualityPref, type QualityPref } from "../lib/quality";
+import { sharedAudio } from "../lib/audio";
 import type { PublicPlayer, PublicRoomState } from "../types";
 
 const QUALITY_OPTIONS: { value: QualityPref; label: string }[] = [
@@ -39,6 +40,7 @@ export default function Lobby({ roomId, state, me, onChanged }: LobbyProps) {
     state.players.length >= MIN_PLAYERS && state.players.every((p) => p.ready);
 
   async function run(fn: () => Promise<{ ok: boolean } & Record<string, unknown>>) {
+    sharedAudio().play("ui");
     setBusy(true);
     setError(null);
     const res = (await fn()) as

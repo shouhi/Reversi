@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiReturnToLobby } from "../lib/clientApi";
+import { sharedAudio } from "../lib/audio";
 import type { PublicPlayer, PublicRoomState } from "../types";
 
 interface ResultScreenProps {
@@ -16,10 +17,24 @@ export default function ResultScreen({ roomId, state, me, onChanged }: ResultScr
   const result = state.result;
   const nameOf = (id: string) => state.players.find((p) => p.id === id)?.nickname ?? "?";
 
+  // My side won if the winner matches my role (hiders or seeker).
+  const iWon = result ? result.winner === me.role : false;
+
+  // Play the win/lose cue ONCE when the result screen appears. `state.result` is a
+  // new object on every poll (~1.5s), so guard with a ref — otherwise the jingle
+  // would re-fire each poll. Server-confirmed outcome (only exists in `result`).
+  const cuePlayed = useRef(false);
+  useEffect(() => {
+    if (!result || cuePlayed.current) return;
+    cuePlayed.current = true;
+    sharedAudio().play(iWon ? "win" : "lose");
+  }, [result, iWon]);
+
   if (!result) return null;
   const hidersWon = result.winner === "hider";
 
   async function playAgain() {
+    sharedAudio().play("ui");
     setBusy(true);
     const res = await apiReturnToLobby(roomId);
     setBusy(false);
@@ -36,6 +51,13 @@ export default function ResultScreen({ roomId, state, me, onChanged }: ResultScr
         }}
       >
         <div className="text-sm font-medium text-muted">ラウンド {state.round} 終了</div>
+        <div className={`mt-1 text-5xl ${iWon ? "ch-win-pop" : "ch-lose-shake"}`} aria-hidden="true">
+          {iWon ? "🎉" : "💦"}
+        </div>
+        {/* Personal outcome in words — never conveyed by colour alone. */}
+        <div className={`mt-1 text-sm font-semibold ${iWon ? "text-emerald-300" : "text-amber-300"}`}>
+          {iWon ? "WIN — あなたの勝ち" : "LOSE — あなたの負け"}
+        </div>
         <h2 className="mt-2 text-3xl font-bold text-ink">
           {hidersWon ? "🙈 隠れる側の勝利！" : "👀 鬼の勝利！"}
         </h2>

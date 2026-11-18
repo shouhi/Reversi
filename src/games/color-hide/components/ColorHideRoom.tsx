@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import SiteHeader from "@/components/layout/SiteHeader";
@@ -16,9 +16,20 @@ import {
   storeToken,
 } from "../lib/clientApi";
 import { allMaps } from "../lib/maps";
+import { sharedAudio, type SfxName } from "../lib/audio";
+import { prefersReducedMotion } from "../lib/motion";
+import AudioSettings from "./AudioSettings";
 import Lobby from "./Lobby";
 import ResultScreen from "./ResultScreen";
 import type { PublicRoomState } from "../types";
+
+/** Sound + banner shown when the round enters a phase (result handled separately). */
+const PHASE_CUES: Partial<Record<string, { sfx: SfxName; text: string }>> = {
+  preparing: { sfx: "gameStart", text: "まもなく開始" },
+  painting: { sfx: "phase", text: "🎨 ペイントタイム" },
+  hiding: { sfx: "phase", text: "🙈 隠れる時間" },
+  seeking: { sfx: "phase", text: "👀 探索開始！" },
+};
 
 const PaintStudio = dynamic(() => import("./paint/PaintStudio"), {
   ssr: false,
@@ -48,6 +59,11 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
   const [committed, setCommitted] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const autoJoined = useRef(false);
+  const reducedMotion = useMemo(prefersReducedMotion, []);
+  const [banner, setBanner] = useState<{ text: string; key: number } | null>(null);
+  const prevPhase = useRef<string | null>(null);
+  const bannerKey = useRef(0);
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Re-render a few times a second so the countdown stays live.
   const [, force] = useState(0);
@@ -55,6 +71,38 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
     const id = setInterval(() => force((n) => n + 1), 300);
     return () => clearInterval(id);
   }, []);
+
+  // Unlock audio on the first user gesture (browsers block autoplay).
+  useEffect(() => {
+    const unlock = () => sharedAudio().resume();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
+  // Play a cue + show a brief banner when the round enters a new phase. Driven by
+  // the server-authoritative phase (polled), never guessed client-side.
+  useEffect(() => {
+    const phase = state?.phase;
+    if (!phase) return;
+    const prev = prevPhase.current;
+    prevPhase.current = phase;
+    if (prev === null || prev === phase) return; // first observation / no change
+    const cue = PHASE_CUES[phase];
+    if (!cue) return; // e.g. lobby / result
+    sharedAudio().play(cue.sfx);
+    if (!reducedMotion) {
+      bannerKey.current += 1;
+      setBanner({ text: cue.text, key: bannerKey.current });
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+      bannerTimer.current = setTimeout(() => setBanner(null), 1800);
+    }
+  }, [state?.phase, reducedMotion]);
+
+  useEffect(() => () => bannerTimer.current && clearTimeout(bannerTimer.current), []);
 
   useEffect(() => {
     setMounted(true);
@@ -101,6 +149,7 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
     setCommitting(false);
     if (res.ok) {
       setCommitted(true);
+      sharedAudio().play("paintCommit");
     } else {
       setCommitError(res.message);
     }
@@ -120,12 +169,25 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
           <Link href="/games/color-hide" className="text-sm text-muted hover:text-ink">
             ← COLOR HIDE
           </Link>
-          {!connected && (
-            <span className="rounded bg-raised px-2 py-1 text-xs text-amber-300 ring-1 ring-line">
-              再接続中…
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {!connected && (
+              <span className="rounded bg-raised px-2 py-1 text-xs text-amber-300 ring-1 ring-line">
+                再接続中…
+              </span>
+            )}
+            <AudioSettings />
+          </div>
         </div>
+
+        {/* Brief phase-transition banner (skipped under reduced-motion). */}
+        {banner && (
+          <div
+            key={banner.key}
+            className="ch-banner pointer-events-none fixed left-1/2 top-24 z-50 -translate-x-1/2 rounded-full bg-black/75 px-6 py-2 text-lg font-bold text-white ring-1 ring-white/15"
+          >
+            {banner.text}
+          </div>
+        )}
 
         {fatal ? (
           <div className="mx-auto max-w-md rounded-xl border border-line bg-surface p-6 text-center">

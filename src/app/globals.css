@@ -136,8 +136,67 @@ body {
   pointer-events: none;
 }
 
+/* ---------------------------------------------------------------------------
+ * COLOR HIDE — game-feel animations (catch flash, phase banner, win/lose, warn).
+ * All are disabled under prefers-reduced-motion below; JS also skips triggering
+ * them, so reduced-motion users get a still, calm experience.
+ * ------------------------------------------------------------------------- */
+.ch-flash {
+  animation: colorHideFlash 0.42s ease-out;
+}
+@keyframes colorHideFlash {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.ch-banner {
+  animation: colorHideBanner 1.8s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+@keyframes colorHideBanner {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.98); }
+  12% { opacity: 1; transform: translateY(0) scale(1); }
+  80% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-6px) scale(0.99); }
+}
+
+.ch-win-pop {
+  animation: colorHideWinPop 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+@keyframes colorHideWinPop {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.ch-lose-shake {
+  animation: colorHideLoseShake 0.5s ease-in-out both;
+}
+@keyframes colorHideLoseShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(2px); }
+}
+
+.ch-pulse {
+  animation: colorHidePulse 1s ease-in-out infinite;
+}
+@keyframes colorHidePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .stone {
+    animation: none;
+  }
+  .ch-banner,
+  .ch-win-pop,
+  .ch-lose-shake,
+  .ch-pulse,
+  .ch-flash {
     animation: none;
   }
 }
