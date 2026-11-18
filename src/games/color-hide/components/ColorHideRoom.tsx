@@ -46,6 +46,7 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
   const autoJoined = useRef(false);
 
   // Re-render a few times a second so the countdown stays live.
@@ -72,7 +73,10 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
 
   // Reset the "paint committed" flag when the round phase changes.
   useEffect(() => {
-    if (state?.phase !== "painting") setCommitted(false);
+    if (state?.phase !== "painting") {
+      setCommitted(false);
+      setCommitError(null);
+    }
   }, [state?.phase]);
 
   async function doJoin(name: string) {
@@ -92,10 +96,14 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
 
   async function commitPaint(dataUrl: string) {
     setCommitting(true);
+    setCommitError(null);
     const res = await apiCommitPaint(roomId, dataUrl);
     setCommitting(false);
-    if (res.ok) setCommitted(true);
-    else setJoinError(res.message);
+    if (res.ok) {
+      setCommitted(true);
+    } else {
+      setCommitError(res.message);
+    }
   }
 
   const remainingMs =
@@ -147,20 +155,27 @@ export default function ColorHideRoom({ roomId }: { roomId: string }) {
           <RoleReveal role={me.role} seconds={seconds} mapName={mapName(state)} />
         ) : state.phase === "painting" ? (
           me.role === "hider" ? (
-            committed ? (
-              <WaitingCard
-                title="ペイント完成！"
-                body="他のプレイヤーを待っています。もう少し描き足すこともできます。"
+            // One PaintStudio stays mounted across commit so the canvas (and the
+            // user's drawing) is never wiped by a remount under "描き直して再送信".
+            <section>
+              <PhaseHeading
+                title={committed ? "ペイント完成！" : "ペイントタイム"}
                 seconds={seconds}
-              >
-                <PaintStudio onCommit={commitPaint} committing={committing} remainingMs={remainingMs} commitLabel="描き直して再送信" />
-              </WaitingCard>
-            ) : (
-              <section>
-                <PhaseHeading title="ペイントタイム" seconds={seconds} />
-                <PaintStudio onCommit={commitPaint} committing={committing} remainingMs={remainingMs} />
-              </section>
-            )
+              />
+              {committed && (
+                <p className="mb-3 rounded-lg bg-surface px-4 py-2 text-sm text-muted ring-1 ring-line">
+                  他のプレイヤーを待っています。もう少し描き足して再送信もできます。
+                </p>
+              )}
+              <PaintStudio
+                onCommit={commitPaint}
+                committing={committing}
+                committed={committed}
+                commitError={commitError}
+                remainingMs={remainingMs}
+                commitLabel={committed ? "描き直して再送信" : "この絵で準備完了"}
+              />
+            </section>
           ) : (
             <WaitingCard
               title="あなたは鬼です"

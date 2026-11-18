@@ -27,6 +27,10 @@ export interface PaintStudioProps {
   onCommit?: (dataUrl: string) => void;
   /** Disables the commit button while a commit is in flight. */
   committing?: boolean;
+  /** True once a commit has succeeded (shows a confirmation; re-send stays available). */
+  committed?: boolean;
+  /** Last commit error, shown inline so saves never fail silently. */
+  commitError?: string | null;
   /** Label for the confirm button. */
   commitLabel?: string;
   /** Optional countdown (ms) shown in the corner during the painting phase. */
@@ -37,6 +41,8 @@ export default function PaintStudio({
   initialDataUrl,
   onCommit,
   committing = false,
+  committed = false,
+  commitError = null,
   commitLabel = "この絵で準備完了",
   remainingMs,
 }: PaintStudioProps) {
@@ -49,6 +55,9 @@ export default function PaintStudio({
   const [, setUndoTick] = useState(0);
   const [quality] = useState(detectQuality);
   const painting = useRef(false);
+  // Track the ONE pointer that owns the active stroke, so a second finger
+  // (e.g. a pinch-zoom) never starts or hijacks a second stroke.
+  const activePointer = useRef<number | null>(null);
 
   // Create the paint engine only on the client (it touches `document`).
   useEffect(() => {
@@ -62,16 +71,22 @@ export default function PaintStudio({
     if (engine && initialDataUrl) engine.loadDataURL(initialDataUrl).catch(() => {});
   }, [engine, initialDataUrl]);
 
-  // End the stroke even if the pointer is released off the model.
+  // End the stroke even if the pointer is released off the model, or the browser
+  // cancels it (pointercancel — common on touch when a gesture is taken over).
   useEffect(() => {
-    const end = () => {
-      if (engine && painting.current) {
-        engine.endStroke();
-        painting.current = false;
-      }
+    const end = (e: PointerEvent) => {
+      if (!engine || !painting.current) return;
+      if (activePointer.current !== null && e.pointerId !== activePointer.current) return;
+      engine.endStroke();
+      painting.current = false;
+      activePointer.current = null;
     };
     window.addEventListener("pointerup", end);
-    return () => window.removeEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
   }, [engine]);
 
   const bump = () => setUndoTick((n) => n + 1);
@@ -84,18 +99,23 @@ export default function PaintStudio({
     );
   }
 
-  const paintDown = (uv: { x: number; y: number }) => {
+  const paintDown = (uv: { x: number; y: number }, pointerId: number) => {
+    if (activePointer.current !== null) return; // a stroke already owns a finger
+    activePointer.current = pointerId;
     engine.beginStroke();
     engine.paintAt(uv.x, uv.y, { color, radius, erase });
     painting.current = true;
     bump();
   };
-  const paintMove = (uv: { x: number; y: number }) => {
-    if (painting.current) engine.paintAt(uv.x, uv.y, { color, radius, erase });
+  const paintMove = (uv: { x: number; y: number }, pointerId: number) => {
+    if (!painting.current || pointerId !== activePointer.current) return;
+    engine.paintAt(uv.x, uv.y, { color, radius, erase });
   };
-  const paintUp = () => {
+  const paintUp = (pointerId: number) => {
+    if (pointerId !== activePointer.current) return; // ignore a non-owning finger
     engine.endStroke();
     painting.current = false;
+    activePointer.current = null;
   };
 
   const seconds = remainingMs != null ? Math.ceil(remainingMs / 1000) : null;
@@ -188,14 +208,38 @@ export default function PaintStudio({
             <span>ブラシの太さ</span>
             <span className="tabular-nums text-ink">{radius}px</span>
           </div>
-          <input
-            type="range"
-            min={2}
-            max={40}
-            value={radius}
-            onChange={(e) => setRadius(Number(e.target.value))}
-            className="w-full accent-[var(--color-accent)]"
-          />
+          <div className="flex items-center gap-3">
+            {/* Live brush preview: a dot scaled to the brush radius, in the current
+                colour (or an eraser swatch), so size + colour are visible at a glance. */}
+            <div
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-bg ring-1 ring-line"
+              aria-label="ブラシのプレビュー"
+            >
+              <span
+                className="rounded-full ring-1 ring-black/20"
+                style={{
+                  width: `${Math.max(4, Math.min(radius * 1.1, 44))}px`,
+                  height: `${Math.max(4, Math.min(radius * 1.1, 44))}px`,
+                  backgroundColor: erase ? "#e5e7eb" : color,
+                  backgroundImage: erase
+                    ? "repeating-conic-gradient(#cbd5e1 0% 25%, #f8fafc 0% 50%)"
+                    : undefined,
+                  backgroundSize: erase ? "8px 8px" : undefined,
+                }}
+              />
+            </div>
+            <input
+              type="range"
+              min={2}
+              max={40}
+              value={radius}
+              onChange={(e) => setRadius(Number(e.target.value))}
+              className="w-full accent-[var(--color-accent)]"
+            />
+          </div>
+          <div className="mt-1 text-[11px] text-muted">
+            いまのブラシ：{erase ? "消しゴム" : "色を塗る"}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -262,14 +306,25 @@ export default function PaintStudio({
         </div>
 
         {onCommit && (
-          <button
-            type="button"
-            disabled={committing}
-            onClick={() => onCommit(engine.toDataURL())}
-            className="mt-1 rounded-lg bg-accent px-4 py-3 text-base font-semibold text-bg disabled:opacity-50"
-          >
-            {committing ? "送信中…" : commitLabel}
-          </button>
+          <div className="mt-1 flex flex-col gap-1.5">
+            <button
+              type="button"
+              disabled={committing}
+              onClick={() => onCommit(engine.toDataURL())}
+              className="rounded-lg bg-accent px-4 py-3 text-base font-semibold text-bg disabled:opacity-50"
+            >
+              {committing ? "送信中…" : commitLabel}
+            </button>
+            {commitError ? (
+              <p className="text-center text-sm text-red-300" role="alert">
+                保存に失敗しました：{commitError}（もう一度お試しください）
+              </p>
+            ) : committed ? (
+              <p className="text-center text-sm text-emerald-300">
+                ✓ 保存しました（描き直して再送信もできます）
+              </p>
+            ) : null}
+          </div>
         )}
       </div>
     </div>
