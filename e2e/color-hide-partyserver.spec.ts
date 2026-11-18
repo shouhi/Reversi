@@ -368,3 +368,63 @@ test("reconnect to the DO with the same token/id", async ({ request }) => {
   expect(again.welcome).toBeDefined();
   again.close();
 });
+
+test("SPECTATOR over the DO: a caught hider no longer receives uncaught hiders' positions", async ({
+  request,
+}) => {
+  // 3 players so there is an uncaught hider to (not) leak. Seeker catches hider A;
+  // A becomes a spectator and must NOT see the still-uncaught hider B — enforced
+  // server-side in the real Durable Object (local workerd), not on the client.
+  const h = await createRoom(request, "H");
+  const g1 = await join(request, h.roomId, "G1");
+  const g2 = await join(request, h.roomId, "G2");
+  const roomId = h.roomId as string;
+  await ready(request, roomId, h.token);
+  await ready(request, roomId, g1.body.token);
+  await ready(request, roomId, g2.body.token);
+  await start(request, roomId, h.token);
+
+  const started = await getRoom(request, roomId);
+  const seekerP = started.players.find((p: { role: string }) => p.role === "seeker");
+  const hiders = started.players.filter((p: { role: string }) => p.role === "hider");
+  const tokenOf = (id: string) =>
+    id === h.playerId ? h.token : id === g1.body.playerId ? g1.body.token : g2.body.token;
+
+  const seeker = await connect(roomId, seekerP.id, tokenOf(seekerP.id));
+  const hiderA = await connect(roomId, hiders[0].id, tokenOf(hiders[0].id));
+  const hiderB = await connect(roomId, hiders[1].id, tokenOf(hiders[1].id));
+  await seeker.waitFor((c) => c.welcome?.role === "seeker");
+  await hiderA.waitFor((c) => c.welcome?.role === "hider");
+  await hiderB.waitFor((c) => c.welcome?.role === "hider");
+  await waitForPhase(request, roomId, "seeking");
+
+  // Keep B well away and uncaught; bring A in front of the seeker and catch A.
+  await moveTo(hiderB, -6, -5, 0, 30);
+  for (let i = 0; i < 6; i++) {
+    seeker.input({ x: 0, z: 5, yaw: 0, moving: false }); // seeker at spawn facing -Z
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  await moveTo(hiderA, 0, 3, 0, 36); // ~2 units in front of the seeker
+  let caught = false;
+  for (let i = 0; i < 10; i++) {
+    seeker.catch(hiders[0].id);
+    await new Promise((r) => setTimeout(r, 150));
+    const s = await getRoom(request, roomId);
+    const a = s.players.find((p: { id: string }) => p.id === hiders[0].id);
+    if (a?.caught) { caught = true; break; }
+  }
+  expect(caught).toBe(true);
+
+  // Now A is a spectator. Collect fresh snapshots and assert A never receives B
+  // (the uncaught hider), while still receiving the (public) seeker.
+  hiderA.snaps.length = 0;
+  await hiderA.waitFor((c) => c.snaps.length >= 4, 5000);
+  const everSawB = hiderA.snaps.some((s) => s.players.some((p) => p.id === hiders[1].id));
+  const sawSeeker = hiderA.snaps.some((s) => s.players.some((p) => p.id === seekerP.id));
+  expect(everSawB).toBe(false); // uncaught hider NEVER leaked to the spectator
+  expect(sawSeeker).toBe(true); // seeker is public — spectator may watch them
+
+  seeker.close();
+  hiderA.close();
+  hiderB.close();
+});
