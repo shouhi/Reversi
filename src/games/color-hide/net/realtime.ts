@@ -9,13 +9,8 @@ import {
 } from "../lib/detection";
 import { validateMove } from "../lib/movement";
 import { hidersCanMove, seekerCanSeek } from "../lib/phases";
-import {
-  CROUCH_SPEED_MULT,
-  NET_TICK_HZ,
-  PLAYER_RADIUS,
-  RUN_SPEED,
-  WALK_SPEED,
-} from "../lib/constants";
+import { moveSpeedFor } from "../lib/balance";
+import { NET_TICK_HZ, PLAYER_RADIUS } from "../lib/constants";
 
 /**
  * COLOR HIDE — authoritative realtime netcode (transport-agnostic).
@@ -109,11 +104,15 @@ export interface PosedPlayer {
  *   - themselves, always;
  *   - the seeker, always (the seeker is not hiding);
  *   - caught hiders, always (revealed to everyone);
- *   - uncaught hiders: visible to a fellow hider (teammates); visible to the
- *     SEEKER only when range + FOV + line of sight all pass.
+ *   - uncaught hiders: visible to a fellow ACTIVE (uncaught) hider only; visible
+ *     to the SEEKER only when range + FOV + line of sight all pass.
  *
- * Because this is pure, tests prove a seeker never receives a hidden hider's
- * position — the exact guarantee the spec demands.
+ * SPECTATOR SAFETY: a CAUGHT hider is a spectator — they are NOT an active hider,
+ * so they do NOT receive uncaught hiders' positions (only the seeker + caught
+ * players, which are public). This is enforced here on the server, not hidden on
+ * the client, so a caught player can never relay a live hider's location (e.g.
+ * over voice chat) to the seeker. Because this is pure, tests prove neither a
+ * seeker nor a spectator ever receives a hidden hider's position.
  */
 export function buildSnapshot(
   recipient: PosedPlayer,
@@ -124,6 +123,8 @@ export function buildSnapshot(
     recipient.role === "seeker"
       ? { pos: recipient.pos, yaw: recipient.yaw, pitch: recipient.pitch }
       : null;
+  // Only an ACTIVE (uncaught) hider may see teammates. A caught hider spectates.
+  const recipientIsActiveHider = recipient.role === "hider" && !recipient.caught;
 
   const out: NetPlayer[] = [];
   for (const p of players) {
@@ -132,7 +133,7 @@ export function buildSnapshot(
     else if (p.role === "seeker") include = true;
     else if (p.role === "hider") {
       if (p.caught) include = true;
-      else if (recipient.role === "hider") include = true;
+      else if (recipientIsActiveHider) include = true;
       else if (seekerView) {
         include = evaluateVisibility(seekerView, { pos: p.pos }, obstacles).visible;
       }
@@ -264,12 +265,12 @@ export class ColorHideServer {
 
     const dtMs = Math.min(Math.max(now - me.lastInputAt, 0), 500);
     const map = getMap(room.meta.mapId);
-    const maxSpeed =
-      me.pose === "stand"
-        ? msg.running
-          ? RUN_SPEED
-          : WALK_SPEED
-        : WALK_SPEED * CROUCH_SPEED_MULT;
+    // Authoritative speed cap; the seeker's balance edge is applied here too so it
+    // matches the client prediction exactly (no rubber-banding).
+    const maxSpeed = moveSpeedFor(role, {
+      running: msg.running,
+      crouched: me.pose !== "stand",
+    });
 
     me.pos = validateMove(
       me.pos,

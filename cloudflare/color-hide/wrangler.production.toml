@@ -1,0 +1,42 @@
+# COLOR HIDE — realtime Worker PRODUCTION config.
+#
+# WHY THIS FILE EXISTS: the default `wrangler.toml` carries DEVELOPMENT [vars]
+# (ENVIRONMENT=development, COLOR_HIDE_APP_URL=http://localhost:3100,
+# COLOR_HIDE_ALLOWED_ORIGINS=""). Because `wrangler deploy` (without --keep-vars)
+# DELETES all plaintext vars and then re-applies those in the config, a plain
+# `wrangler deploy` with the dev config would overwrite production with dev values
+# and break the live backend (localhost token auth → all auth fails; empty origins
+# → all WS 403; ENVIRONMENT=development → the DO drops its production-secret
+# requirement). This file pins the PRODUCTION non-secret vars so the prod deploy is
+# deterministic and can never inherit dev values.
+#
+# DEPLOY (production):  ./deploy-production.sh   (wraps `wrangler deploy --config
+# wrangler.production.toml`). The guard test `wranglerConfig.test.ts` asserts these
+# values are production-safe.
+#
+# SECRETS ARE NOT STORED HERE. COLOR_HIDE_RT_SECRET is set once via
+# `wrangler secret put COLOR_HIDE_RT_SECRET` and PERSISTS across deploys (deploy
+# never deletes secrets). COLOR_HIDE_REALTIME_ENABLED is intentionally OMITTED
+# (default = enabled); a clean deploy with this config also clears any stray
+# emergency `=0` kill-switch value. To stop new connections during a maintenance
+# window, deploy with `--var COLOR_HIDE_REALTIME_ENABLED:0` on top of this config.
+
+name = "color-hide-realtime"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# Same Durable Object class + the SAME v1 migration tag as wrangler.toml, so a
+# production deploy targets the existing Worker and NEVER adds a new migration.
+[[durable_objects.bindings]]
+name = "ColorHide"
+class_name = "ColorHide"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ColorHide"]
+
+# PRODUCTION non-secret vars (all public; documented in docs/COLOR_HIDE.md).
+[vars]
+ENVIRONMENT = "production"
+COLOR_HIDE_APP_URL = "https://zen-gamebox.vercel.app"
+COLOR_HIDE_ALLOWED_ORIGINS = "https://zen-gamebox.vercel.app"

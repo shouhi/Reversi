@@ -67,6 +67,19 @@ describe("buildSnapshot (per-recipient visibility filter)", () => {
     const ids = buildSnapshot(seeker, [seeker, caught], [wall]).map((p) => p.id);
     expect(ids).toContain("C");
   });
+
+  it("SPECTATOR: a CAUGHT hider sees the seeker + caught players but NOT uncaught hiders", () => {
+    // The caught player becomes a spectator — leaking a live hider's position to
+    // them would let them relay it to the seeker (e.g. over voice). Enforced here.
+    const me = posed("ME", "hider", { x: 0, y: 0, z: 0 }, { caught: true });
+    const activeMate = posed("A", "hider", { x: 10, y: 0, z: 10 }); // uncaught
+    const caughtMate = posed("C", "hider", { x: -3, y: 0, z: 0 }, { caught: true });
+    const ids = buildSnapshot(me, [seeker, me, activeMate, caughtMate], []).map((p) => p.id);
+    expect(ids).toContain("S"); // seeker is public
+    expect(ids).toContain("ME"); // self
+    expect(ids).toContain("C"); // other caught player is public
+    expect(ids).not.toContain("A"); // uncaught hider NEVER leaked to a spectator
+  });
 });
 
 // ---------------------------------------------------------------------------

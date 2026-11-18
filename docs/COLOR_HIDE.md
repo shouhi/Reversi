@@ -503,3 +503,66 @@ WS接続確立 ~330ms（TLS+edge込み）。スナップショット ~14.5Hz（6
 - **Secret再設定/ローテーション**：Worker と Vercel Production を同時更新→Worker再デプロイ＋Vercel再デプロイ。
 - **利用者表示**：WS不通時はクライアントが「RT未接続」バッジ表示＋ロビー/ペイント/結果はHTTPで継続。
 - **既存ゲーム**：COLOR HIDE は別slug/API/Workerで分離＝ロールバック操作の影響を受けない。**Redis本番データは削除しない**（DOは永続データ無しのため切断時も位置情報のみ消失、ルーム状態はRedis権威で保持）。
+
+---
+
+# Phase 9-D — リリース・リカバリ（安全な再デプロイ基盤）（2026-11-18）
+
+**今回の実施範囲：調査・設定ファイル追加・テスト追加・ドキュメント・Draft PR更新のみ。** 本番Workerデプロイ／本番Secret変更／Vercel本番env変更／本番再デプロイ／mainマージ／Draft解除は**未実施**。Cloudflare本番設定の確認は**読み取り専用**（名前と非秘匿値のみ。Secretは存在有無のみ確認、値は取得・表示していない）。
+
+## 背景：なぜ単純な「マージ＋Vercelデプロイ」が危険か
+Phase 9-D の変更（`net/realtime.ts`／`lib/balance.ts`／`lib/constants.ts`／`lib/maps.ts`）は **Cloudflare Worker にもコンパイルされて載る**（`cloudflare/color-hide/src/party.ts` が `src/games/color-hide/net/realtime.ts` を import）。したがって：
+- **観戦情報漏洩の修正はサーバー（Worker）側**にある。Vercel だけ更新しても **Worker 側の漏洩は直らない**。
+- 鬼速度 1.15×・新マップの当たり判定/遮蔽も **Worker 側の権威判定**。クライアントだけ新しくすると判定とズレる。
+
+さらに、既存の本番デプロイ手順（Phase 7 の `wrangler deploy --config wrangler.toml --var ...`）は、**`--var` を1つでも付け忘れると `wrangler.toml` の開発用 [vars]（`ENVIRONMENT=development`／`http://localhost:3100`／空オリジン）が本番へ上書き**され、本番が即死する（`wrangler deploy` は `--keep-vars` なしだと平文varsを全削除→configの値を再適用する仕様）。Secret は別管理で消えないが、この平文vars上書きリスクが残っていた。
+
+## 対策：本番専用config＋安全デプロイラッパ（構造的に事故れない）
+- **`cloudflare/color-hide/wrangler.production.toml`（新規）**：本番の非秘匿varsを**固定**（`ENVIRONMENT=production`／`COLOR_HIDE_APP_URL=https://zen-gamebox.vercel.app`／`COLOR_HIDE_ALLOWED_ORIGINS=https://zen-gamebox.vercel.app`）。Worker名・DOクラス・migration tag(`v1`) は `wrangler.toml` と同一＝**既存Workerを対象にし、新規migrationを増やさない**。Secretは**書かない**（`wrangler secret` が永続）。`COLOR_HIDE_REALTIME_ENABLED` は**省略＝既定で有効**（＋万一の緊急停止値 `0` もクリーンデプロイで消える）。
+- **`cloudflare/color-hide/deploy-production.sh`（新規, 実行可）**：唯一の正規デプロイ経路。無引数＝**dry-run（アップロードなし）**、`--go`＝本番デプロイ、`--stop`＝`REALTIME_ENABLED:0`（新規WS→503, 既存は継続）、`--resume`＝クリーン再デプロイ。preflight で **アカウント（`6b759fbb864b86c1189a3fb6a5f2c11f`）／対象Worker名／`COLOR_HIDE_RT_SECRET` の存在**を検証し、一致しなければ中止。
+- **`src/games/color-hide/lib/wranglerConfig.test.ts`（新規, 6 tests）**：設定ドリフトの番兵。dev configがdev値のまま／prod configがprod値（本番は開発マーカーを含まない・コメントは除外）／Secret値を保存していない／Worker名一致／DOクラス・migration tag一致、を assert。
+- **dry-run実証済み**（アップロードなし）：`./deploy-production.sh` が `env.ENVIRONMENT ("production")`／`env.COLOR_HIDE_APP_URL ("https://zen-gamebox.vercel.app")`／`env.COLOR_HIDE_ALLOWED_ORIGINS ("https://zen-gamebox.vercel.app")` を出力。開発値は一切載らないことを確認。
+
+## 情報漏洩修正の評価（サーバー権威・クライアント隠蔽だけではない）
+`net/realtime.ts` の `buildSnapshot` で、**捕獲済み（観戦）プレイヤーの受信スナップショットから未捕獲の隠れ役を除外**（`recipientIsActiveHider` のときだけ他隠れ役を含める）。鬼は公開情報なので観戦者も見える。**実DO（ローカルworkerd）でのE2Eで実証**（下記テスト10）：捕獲された隠れ役Aのスナップショットに未捕獲の隠れ役Bが**一度も現れず**、鬼は現れる。クライアント側の非表示ではなく**サーバーが送らない**＝仕様（「クライアント側で非表示にするだけの対策は禁止」）を満たす。新規プロトコルは追加していない（ワイヤ形状不変）。
+
+## 新旧混在の互換性マトリクス（Worker × Client）
+ワイヤ形状（スナップショット/入力）は**不変**（スペクテイター除外も速度も当たり判定もサーバー内部計算で、プロトコル追加なし）。よって解析エラーは起きない。差は「ゲーム体感」のみ。
+
+| | **旧Client**（現本番） | **新Client**（PR #9） |
+|---|---|---|
+| **旧Worker**（現本番） | ✅ 現状（正常） | ❌ **危険**：鬼速度が新Clientは1.15×予測→旧Workerはbase上限でラバーバンド／新Clientが描く新障害物を旧WorkerのLOSは知らず遮蔽ズレ／**観戦漏洩が未修正のまま**。→ **Vercel先行デプロイは禁止** |
+| **新Worker**（PR #9） | ⚠️ **許容（一時的）**：旧Clientはbase速度送信＝新上限内でOK／**漏洩は即修正**／旧Clientは新障害物を描かないので新Workerの当たり判定で「見えない壁」程度の軽微な一時ズレ。Workerデプロイ→Vercelビルド完了までの数分のみ | ✅ **目標状態**（全テスト合格） |
+
+**結論＝デプロイ順序は Worker 先行 → Vercel（main マージ）後追い。** これにより「旧Worker×新Client」（危険セル）には**決して入らない**。間に入る「新Worker×旧Client」は許容範囲の一時状態。`NEXT_PUBLIC_COLOR_HIDE_WS_URL` は Phase 7/8 で設定済み＝**今回Vercel env変更は不要**。
+
+## テスト結果（ローカル検証 vs Cloudflareデプロイ検証を区別）
+**すべてローカル検証**。本番Cloudflareへのデプロイ検証は**未実施（承認待ち）**。
+- `typecheck` ✅ ／ `cf:typecheck` ✅ ／ `lint` ✅
+- `npm test`（vitest）✅ **522 tests / 34 files**（新 `wranglerConfig.test.ts` 6件・`balance`・`maps`・`roomService`・`realtime` 含む）
+- `npm run build` ✅
+- `npm run test:e2e`（chromium）✅ **26 passed**（既存7ゲーム含む）
+- `npm run test:partyserver`（**実workerd＋実WebSocket＋メモリストア**）✅ **10 passed**。新テスト10＝観戦セキュリティ（実DOで捕獲後に未捕獲隠れ役が漏れないこと）。
+- `deploy-production.sh` **dry-run**（アップロードなし）で本番vars固定を実証。
+
+> 区別：上記は**ローカルworkerdで検証**した内容。実Cloudflare本番Workerランタイム・実インターネット経路・本番Secret経路での検証は、デプロイ承認後の公開後スモークテストで行う（未実施）。
+
+## RELEASE PLAN（順序・要承認・未実行）
+> 前提：本番Worker `color-hide-realtime` は既に稼働中（Phase 8で作成済み・現在は旧コード）。今回は**更新デプロイ**。Vercel `NEXT_PUBLIC_COLOR_HIDE_WS_URL`／`COLOR_HIDE_RT_SECRET` は設定済み＝env変更なし。
+
+1. **（任意・推奨）メンテ停止**：`./deploy-production.sh --stop`（新規WS→503, 既存対戦は継続）。短時間なら省略可。
+2. **Worker 先行デプロイ**：`./deploy-production.sh`（dry-run で再確認）→ `./deploy-production.sh --go`。本番varsは固定・Secretは保持・新規migrationなし。
+3. **Worker 動作確認**：`curl https://color-hide-realtime.s-ide.workers.dev/health` → `ok`。`wrangler deployments list` で新バージョンを確認。
+4. **（1を実施した場合）再開**：`./deploy-production.sh --resume`。
+5. **Draft解除 → PR #9 を main へマージ**：GitHub連携が game-box Production を**自動ビルド＆デプロイ**（手動 `vercel --prod` はしない）。
+6. **自動デプロイ完了待ち**（Vercelダッシュボード）。この間だけ「新Worker×旧Client」＝許容の一時状態。
+7. **公開後スモークテスト**（Phase 7 の SMOKE TESTS 全項目＋観戦漏洩なし＋鬼速度の体感＋新マップ障害物の遮蔽＋既存7ゲーム正常）。
+8. 異常時は下記ロールバック。
+
+## ROLLBACK PLAN（緊急停止・復旧）
+- **新規接続のみ停止**：`./deploy-production.sh --stop`（`REALTIME_ENABLED:0`＝新規WS 503・既存継続）。
+- **Workerコードを前版へ**：`wrangler rollback`（本番Worker・直前バージョン＝旧コードに戻る）。これで「旧Worker」に戻るため、**同時にVercelも旧Clientへ戻す**（下記）こと＝危険セル回避。
+- **Vercel本番を前版へ**：Vercelダッシュボードの **Instant Rollback** で直前Productionデプロイ（旧Client）に即時復帰。
+- **順序（整合性維持）**：巻き戻しは **Vercel先（旧Client）→ Worker後（旧Worker）** が安全（「新Worker×旧Client」は許容、「旧Worker×新Client」は回避）。緊急時にまず止めたいだけなら `--stop` で新規接続遮断が最速。
+- **最終手段**：`wrangler delete`（全切断）は最後。**Redis本番データは削除しない**（DOは永続データ無し＝切断で位置情報のみ消失、ルーム状態はRedis権威で保持）。
+- **既存ゲーム**：別slug/API/Workerで分離＝ロールバック操作の影響なし。

@@ -72,6 +72,17 @@ export const RUN_SPEED = 6.0;
 /** Crouch multiplier applied to the active base speed. */
 export const CROUCH_SPEED_MULT = 0.45;
 /**
+ * Seeker move-speed multiplier (balance). Hiders and the seeker otherwise share
+ * speeds, which makes a fleeing hider impossible to run down (relative closing
+ * speed = 0) — so catches depend entirely on cornering, and the seeker is
+ * increasingly disadvantaged as the hider count grows (they must catch ALL of
+ * them). A modest edge lets a skilled seeker close distance in the open while
+ * hiders still escape by breaking line of sight. Applied in BOTH client
+ * prediction AND server move validation so the two never disagree. See the
+ * deterministic pursuit simulation in `balance.ts` / `balance.test.ts`.
+ */
+export const SEEKER_SPEED_MULT = 1.15;
+/**
  * Max horizontal distance a player may legitimately move between two position
  * updates, as a multiple of (RUN_SPEED * dt). Anything beyond this is clamped /
  * rejected by the server as a teleport attempt. The slack absorbs jitter.

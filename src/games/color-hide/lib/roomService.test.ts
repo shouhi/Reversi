@@ -160,6 +160,25 @@ describe("startGame", () => {
     expect(s.seekerId).toBe(seekers[0].id);
     expect(s.yourRole).toBe("seeker"); // caller is the host == seeker here
   });
+
+  it("rotates the seeker: the previous seeker is not picked again when avoidable", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 2);
+    for (const t of tokens) await setReady(store, roomId, t, true, 1000);
+    // Round 1: rng → 0 picks the host (index 0) as seeker.
+    const r1 = await startGame(store, roomId, tokens[0], 1000, () => 0);
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    const seeker1 = r1.value.seekerId!;
+    // Back to lobby, ready up, start again. Even with rng → 0, the previous
+    // seeker is excluded from the candidate list, so the role must alternate.
+    await returnToLobby(store, roomId, tokens[0], 2000);
+    for (const t of tokens) await setReady(store, roomId, t, true, 2000);
+    const r2 = await startGame(store, roomId, tokens[0], 2000, () => 0);
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.seekerId).not.toBe(seeker1); // rotated to the other player
+  });
 });
 
 describe("phase progression over time (server clock)", () => {

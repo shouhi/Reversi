@@ -74,6 +74,13 @@ const room: GameMap = {
     box(-6.5, 3, 1.4, 1.4, 1.6), // plant + pot (south-west)
     box(4, 3.5, 2.2, 1, 0.9), // bench (south)
     box(2, -4.5, 1.6, 0.6, 1.4), // cabinet (north)
+    // Added (9-D balance): the lone hider on this beginner map had too few true
+    // sightline breaks. A head-height divider splits the west half so the seeker
+    // must flank it (a peek-or-commit decision), and a mid shelf gives the east
+    // side real cover with a flanking route either way. Both leave spawns clear
+    // and the floor fully connected (see the map reachability test).
+    box(-2.5, -1.5, 1, 2.6, 1.8), // partition (west-center, head height)
+    box(3.5, 1, 1.8, 1, 1.3), // low shelf (east-center cover)
   ],
   spawns: [
     v(-5, 3.5),

@@ -136,6 +136,8 @@ function resetForLobby(state: RoomState, now: number): RoomState {
     phase: "lobby",
     phaseStartedAt: now,
     seekerId: null,
+    // Remember who was the seeker so the next round can rotate away from them.
+    prevSeekerId: state.seekerId ?? state.prevSeekerId ?? null,
     players: state.players.map((p) => ({
       ...p,
       role: null,
@@ -546,8 +548,15 @@ export function startGame(
     if (!state.players.every((p) => p.ready))
       return fail("not_all_ready", "Everyone must be ready first.");
 
-    const seekerIndex = Math.floor(rng() * state.players.length);
-    const seeker = state.players[seekerIndex];
+    // Fair role rotation: avoid immediately re-picking the previous seeker when
+    // there is another candidate (at 2 players this guarantees the role alternates).
+    const prev = state.prevSeekerId ?? state.seekerId ?? null;
+    let candidates = state.players;
+    if (state.players.length >= 2 && prev) {
+      const rest = state.players.filter((p) => p.id !== prev);
+      if (rest.length > 0) candidates = rest;
+    }
+    const seeker = candidates[Math.floor(rng() * candidates.length)];
     const players = state.players.map((p): PlayerRecord => ({
       ...p,
       role: (p.id === seeker.id ? "seeker" : "hider") as Role,
