@@ -208,13 +208,12 @@ export default function GameScene(props: GameSceneProps) {
       {/* Brief catch flash (skipped under reduced-motion). Non-blocking. */}
       {flash && (
         <div
-          className="pointer-events-none absolute inset-0 z-20"
+          className="ch-flash pointer-events-none absolute inset-0 z-20"
           style={{
             background:
               flash === "success"
                 ? "radial-gradient(circle, rgba(16,185,129,0.0) 55%, rgba(16,185,129,0.35) 100%)"
                 : "radial-gradient(circle, rgba(239,68,68,0.0) 45%, rgba(239,68,68,0.45) 100%)",
-            animation: "colorHideFlash 0.42s ease-out",
           }}
         />
       )}

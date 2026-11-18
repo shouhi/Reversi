@@ -66,7 +66,9 @@ export interface GaitParams {
   rate: number;
 }
 
-const GAITS: Record<AnimState, GaitParams> = {
+// Frozen so a caller can never corrupt the shared table; gaitParams() also
+// returns a COPY, so the per-instance damping in the rig stays isolated.
+const GAITS: Record<AnimState, Readonly<GaitParams>> = {
   // Subtle breathing only — no stride; the body gently rises/falls.
   idle: { swing: 0, armSwing: 0.04, lean: 0, bob: 0.02, rate: 1.7 },
   walk: { swing: 0.5, armSwing: 0.42, lean: 0.05, bob: 0.035, rate: 8 },
@@ -79,12 +81,18 @@ const GAITS: Record<AnimState, GaitParams> = {
   win: { swing: 0, armSwing: 0.2, lean: 0, bob: 0.05, rate: 6 },
   lose: { swing: 0, armSwing: 0, lean: 0, bob: 0, rate: 0 },
 };
+for (const g of Object.values(GAITS)) Object.freeze(g); // never mutate the table
 
-/** Gait parameters for an anim state (reduced-motion zeroes all amplitudes). */
+/**
+ * Gait parameters for an anim state (reduced-motion zeroes all amplitudes).
+ * Always returns a FRESH object — the rig damps these values in place per frame,
+ * so handing back the shared table entry would corrupt it and alias every
+ * character to one gait. Callers own the returned object.
+ */
 export function gaitParams(anim: AnimState, reducedMotion = false): GaitParams {
   const g = GAITS[anim] ?? GAITS.idle;
   if (reducedMotion) return { swing: 0, armSwing: 0, lean: 0, bob: 0, rate: g.rate };
-  return g;
+  return { swing: g.swing, armSwing: g.armSwing, lean: g.lean, bob: g.bob, rate: g.rate };
 }
 
 /** Advances a cyclic gait phase, wrapped to [0, 2π). */

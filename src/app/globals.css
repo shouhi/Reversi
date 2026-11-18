@@ -141,6 +141,9 @@ body {
  * All are disabled under prefers-reduced-motion below; JS also skips triggering
  * them, so reduced-motion users get a still, calm experience.
  * ------------------------------------------------------------------------- */
+.ch-flash {
+  animation: colorHideFlash 0.42s ease-out;
+}
 @keyframes colorHideFlash {
   0% { opacity: 0; }
   12% { opacity: 1; }
@@ -192,7 +195,8 @@ body {
   .ch-banner,
   .ch-win-pop,
   .ch-lose-shake,
-  .ch-pulse {
+  .ch-pulse,
+  .ch-flash {
     animation: none;
   }
 }

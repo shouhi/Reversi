@@ -1,17 +1,26 @@
 "use client";
 
-import { useState } from "react";
-import { sharedAudio, loadAudioPrefs } from "../lib/audio";
+import { useEffect, useState } from "react";
+import { sharedAudio, loadAudioPrefs, DEFAULT_AUDIO_PREFS } from "../lib/audio";
 
 /**
  * Compact mute toggle + volume slider for the SFX engine. Persists to
  * localStorage (via the engine) and unlocks/plays a tick on unmute so the player
- * hears it working. State is local but reads the shared engine, so the value is
- * consistent wherever this is mounted.
+ * hears it working.
+ *
+ * Starts from DEFAULT prefs and loads the stored ones AFTER mount — reading
+ * localStorage during the first render would make the SSR HTML (defaults) differ
+ * from the client (stored value) and cause a hydration mismatch. The engine
+ * itself already applies the stored prefs, so audio behaviour is correct from the
+ * first frame; only this control's display syncs on mount.
  */
 export default function AudioSettings({ className = "" }: { className?: string }) {
-  const [prefs, setPrefs] = useState(loadAudioPrefs);
+  const [prefs, setPrefs] = useState(DEFAULT_AUDIO_PREFS);
   const engine = sharedAudio();
+
+  useEffect(() => {
+    setPrefs(loadAudioPrefs());
+  }, []);
 
   const toggleMute = () => {
     const next = !prefs.muted;

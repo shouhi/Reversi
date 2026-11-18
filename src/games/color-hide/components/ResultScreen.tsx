@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiReturnToLobby } from "../lib/clientApi";
 import { sharedAudio } from "../lib/audio";
 import type { PublicPlayer, PublicRoomState } from "../types";
@@ -20,10 +20,13 @@ export default function ResultScreen({ roomId, state, me, onChanged }: ResultScr
   // My side won if the winner matches my role (hiders or seeker).
   const iWon = result ? result.winner === me.role : false;
 
-  // Play the win/lose cue once when the result screen appears (server-confirmed
-  // outcome — it only exists in the `result` phase).
+  // Play the win/lose cue ONCE when the result screen appears. `state.result` is a
+  // new object on every poll (~1.5s), so guard with a ref — otherwise the jingle
+  // would re-fire each poll. Server-confirmed outcome (only exists in `result`).
+  const cuePlayed = useRef(false);
   useEffect(() => {
-    if (!result) return;
+    if (!result || cuePlayed.current) return;
+    cuePlayed.current = true;
     sharedAudio().play(iWon ? "win" : "lose");
   }, [result, iWon]);
 

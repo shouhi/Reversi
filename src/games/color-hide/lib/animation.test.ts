@@ -78,6 +78,17 @@ describe("gait", () => {
     expect(gaitParams("idle").bob).toBeGreaterThan(0); // breathing
   });
 
+  it("returns a FRESH object each call — mutating it never corrupts the table", () => {
+    // Reproduces the aliasing bug: the rig damps these values in place per frame,
+    // so two calls must not share a reference, and a mutation must not leak.
+    const a = gaitParams("idle");
+    const b = gaitParams("idle");
+    expect(a).not.toBe(b);
+    a.swing = 0.9; // simulate the rig mutating its copy
+    expect(gaitParams("idle").swing).toBe(0); // table/global still pristine
+    expect(gaitParams("run").swing).toBeGreaterThan(0); // unaffected
+  });
+
   it("reduced motion zeroes all amplitudes", () => {
     const g = gaitParams("run", true);
     expect(g.swing).toBe(0);
