@@ -49,6 +49,12 @@ export interface GameSceneProps {
   canCatch: boolean;
   /** This player has been caught and is now a spectator (no movement/catch). */
   spectating?: boolean;
+  /**
+   * Phase 10: the in-world paint overlay is open. Movement + look input are frozen
+   * and held keys are released so a key held at open-time can't cause drift, and so
+   * drawing never fights camera/movement control.
+   */
+  inputLocked?: boolean;
   transport: RealtimeTransport;
   roster: RosterEntry[];
   paints: Record<string, string>;
@@ -119,21 +125,40 @@ export default function GameScene(props: GameSceneProps) {
   };
   useEffect(() => () => flashTimer.current && clearTimeout(flashTimer.current), []);
 
+  // Pressed keys live in a ref so the paint-mode lock (below) can release them all
+  // when the overlay opens — otherwise a key held at open-time would stay "down".
+  const keysRef = useRef(new Set<string>());
+  const lockedRef = useRef(false);
+
+  const recomputeKeys = () => {
+    const keys = keysRef.current;
+    const i = input.current;
+    i.move.x = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+    i.move.y = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
+    i.running = keys.has("ShiftLeft") || keys.has("ShiftRight");
+  };
+
+  // When the paint overlay opens, drop every held key + zero movement/look so the
+  // character can't drift and drawing never conflicts with movement/camera input.
+  useEffect(() => {
+    lockedRef.current = !!props.inputLocked;
+    if (props.inputLocked) {
+      keysRef.current.clear();
+      input.current.move = { x: 0, y: 0 };
+      input.current.look = { dx: 0, dy: 0 };
+      input.current.running = false;
+    }
+  }, [props.inputLocked]);
+
   // Keyboard input.
   useEffect(() => {
-    const keys = new Set<string>();
-    const recompute = () => {
-      const i = input.current;
-      i.move.x = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
-      i.move.y = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
-      i.running = keys.has("ShiftLeft") || keys.has("ShiftRight");
-    };
+    const keys = keysRef.current;
     const cyclePose = () => {
       input.current.poseIndex = (input.current.poseIndex + 1) % POSES.length;
       setPoseLabel(POSES[input.current.poseIndex]);
     };
     const down = (e: KeyboardEvent) => {
-      if (e.repeat) return;
+      if (e.repeat || lockedRef.current) return; // paint mode: ignore gameplay keys
       if (e.code === "KeyE") cyclePose();
       else if (e.code === "KeyC") {
         input.current.poseIndex = input.current.poseIndex === 1 ? 0 : 1;
@@ -142,12 +167,12 @@ export default function GameScene(props: GameSceneProps) {
         input.current.catchReq = true;
       } else {
         keys.add(e.code);
-        recompute();
+        recomputeKeys();
       }
     };
     const up = (e: KeyboardEvent) => {
       keys.delete(e.code);
-      recompute();
+      recomputeKeys();
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
@@ -173,12 +198,12 @@ export default function GameScene(props: GameSceneProps) {
   const lastPtr = useRef({ x: 0, y: 0 });
   const MAX_LOOK_STEP = 80;
   const onPointerDown = (e: React.PointerEvent) => {
-    if (lookPointer.current !== null) return;
+    if (lockedRef.current || lookPointer.current !== null) return;
     lookPointer.current = e.pointerId;
     lastPtr.current = { x: e.clientX, y: e.clientY };
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (e.pointerId !== lookPointer.current) return;
+    if (lockedRef.current || e.pointerId !== lookPointer.current) return;
     input.current.look.dx += clampLookDelta(e.clientX - lastPtr.current.x, MAX_LOOK_STEP);
     input.current.look.dy += clampLookDelta(e.clientY - lastPtr.current.y, MAX_LOOK_STEP);
     lastPtr.current = { x: e.clientX, y: e.clientY };
@@ -295,6 +320,7 @@ function SceneContents({
   canMove,
   canCatch,
   spectating,
+  inputLocked,
   transport,
   roster,
   paints,
@@ -344,7 +370,7 @@ function SceneContents({
     let mx = i.move.x;
     let my = i.move.y;
     const mlen = Math.hypot(mx, my);
-    const moving = canMove && mlen > 0.05;
+    const moving = canMove && !inputLocked && mlen > 0.05;
     if (moving) {
       mx /= Math.max(1, mlen);
       my /= Math.max(1, mlen);

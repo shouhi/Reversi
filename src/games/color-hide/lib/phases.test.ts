@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   advancePhase,
   hidersCanMove,
+  paintWindowOpen,
   phaseDurationMs,
   phaseEndsAt,
   remainingMs,
@@ -50,13 +51,24 @@ describe("advancePhase", () => {
     expect(next.phaseStartedAt).toBe(start + PAINTING_MS);
   });
 
+  it("Phase 10: preparing advances straight to hiding (painting is skipped)", () => {
+    const start = 5_000;
+    const next = advancePhase(
+      { phase: "preparing", phaseStartedAt: start },
+      start + PREPARING_MS,
+    );
+    expect(next.phase).toBe("hiding");
+    expect(next.phaseStartedAt).toBe(start + PREPARING_MS);
+  });
+
   it("rolls forward through multiple elapsed phases when the server was idle", () => {
     const start = 0;
-    // Jump far enough that preparing+painting+hiding have all elapsed.
-    const now = PREPARING_MS + PAINTING_MS + HIDING_MS + 10;
+    // Phase 10 forward path is preparing → hiding → seeking (no painting). Jump
+    // past both preparing and hiding.
+    const now = PREPARING_MS + HIDING_MS + 10;
     const res = advancePhase({ phase: "preparing", phaseStartedAt: start }, now);
     expect(res.phase).toBe("seeking");
-    expect(res.phaseStartedAt).toBe(PREPARING_MS + PAINTING_MS + HIDING_MS);
+    expect(res.phaseStartedAt).toBe(PREPARING_MS + HIDING_MS);
   });
 
   it("seeking elapses into result (round ends by time)", () => {
@@ -86,5 +98,18 @@ describe("movement gating", () => {
   it("seeker may only seek during the seeking phase", () => {
     expect(seekerCanSeek("seeking")).toBe(true);
     expect(seekerCanSeek("hiding")).toBe(false);
+  });
+});
+
+describe("paintWindowOpen (Phase 10 server-authoritative save window)", () => {
+  it("accepts paint commits in every pre-hunt phase (lobby…hiding)", () => {
+    expect(paintWindowOpen("lobby")).toBe(true);
+    expect(paintWindowOpen("preparing")).toBe(true);
+    expect(paintWindowOpen("painting")).toBe(true); // legacy
+    expect(paintWindowOpen("hiding")).toBe(true);
+  });
+  it("rejects commits once the hunt begins or the round is over", () => {
+    expect(paintWindowOpen("seeking")).toBe(false);
+    expect(paintWindowOpen("result")).toBe(false);
   });
 });

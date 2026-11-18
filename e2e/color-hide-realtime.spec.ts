@@ -350,3 +350,73 @@ test("reconnect: a player can drop its socket and rejoin the live round", async 
   expect(again.welcome).toBeDefined();
   again.close();
 });
+
+// A valid tiny 1x1 PNG data URL (well under MAX_PAINT_BYTES, matches the payload regex).
+const TINY_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+test("Phase 10: paint commit is accepted during hiding but REJECTED once seeking begins", async ({
+  request,
+}) => {
+  const host = await createRoom(request, "H");
+  const g = await join(request, host.roomId, "G");
+  const roomId = host.roomId as string;
+  await ready(request, roomId, host.token);
+  await ready(request, roomId, g.body.token);
+  await start(request, roomId, host.token);
+
+  // Reach the hiding (& painting) phase and commit — the server accepts it.
+  await waitForPhase(request, roomId, "hiding");
+  const ok = await request.post(`/api/games/color-hide/rooms/${roomId}/paint`, {
+    headers: { "x-color-hide-token": host.token },
+    data: { paint: TINY_PNG },
+  });
+  expect(ok.status()).toBe(200);
+
+  // Once the hunt starts, the server refuses further commits (client can't extend).
+  await waitForPhase(request, roomId, "seeking");
+  const rejected = await request.post(`/api/games/color-hide/rooms/${roomId}/paint`, {
+    headers: { "x-color-hide-token": host.token },
+    data: { paint: TINY_PNG },
+  });
+  expect(rejected.status()).toBe(409);
+  const body = await rejected.json();
+  expect(body.error?.code).toBe("phase_closed");
+});
+
+test("Phase 10: during hiding the seeker receives NO hider positions (server-side)", async ({
+  request,
+}) => {
+  const host = await createRoom(request, "H");
+  const g = await join(request, host.roomId, "G");
+  const roomId = host.roomId as string;
+  await ready(request, roomId, host.token);
+  await ready(request, roomId, g.body.token);
+  await start(request, roomId, host.token);
+
+  const started = await waitForPhase(request, roomId, "hiding");
+  const seekerP = started.players.find((p: { role: string }) => p.role === "seeker");
+  const hiderP = started.players.find((p: { role: string }) => p.role === "hider");
+  const seekerTok = seekerP.id === host.playerId ? host.token : g.body.token;
+  const hiderTok = hiderP.id === host.playerId ? host.token : g.body.token;
+
+  const seeker = await connect(roomId, seekerP.id, seekerTok);
+  const hider = await connect(roomId, hiderP.id, hiderTok);
+  await seeker.waitFor((c) => c.welcome?.role === "seeker");
+  await hider.waitFor((c) => c.welcome?.role === "hider");
+
+  // Hider roams during hiding; collect the seeker's snapshots for ~2s.
+  seeker.snapshots.length = 0;
+  for (let i = 0; i < 20; i++) {
+    hider.sendInput({ x: 0, z: 1 + i * 0.05, moving: true });
+    await new Promise((r) => setTimeout(r, 90));
+  }
+  // The seeker must never have received the hider while hiding (server withholds it).
+  const leaked = seeker.snapshots.some((s) => s.players.some((p) => p.id === hiderP.id));
+  expect(leaked).toBe(false);
+  // Sanity: the seeker is still receiving its own snapshots.
+  expect(seeker.snapshots.some((s) => s.players.some((p) => p.id === seekerP.id))).toBe(true);
+
+  seeker.close();
+  hider.close();
+});

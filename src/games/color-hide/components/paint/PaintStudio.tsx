@@ -7,6 +7,7 @@ import Character from "../three/Character";
 import { PaintEngine } from "./PaintEngine";
 import { detectQuality, dprFor } from "../../lib/quality";
 import { sharedAudio } from "../../lib/audio";
+import type { PaletteSwatch } from "../../lib/maps";
 
 /**
  * The character paint studio. Rotate the body and paint directly on its surface
@@ -36,6 +37,20 @@ export interface PaintStudioProps {
   commitLabel?: string;
   /** Optional countdown (ms) shown in the corner during the painting phase. */
   remainingMs?: number | null;
+  /**
+   * Phase 10 in-world eyedropper: the surrounding surface colours of the current
+   * map (壁 / 床 / 家具). Tapping one selects it so the hider can blend into the
+   * exact shade they must hide against. Omitted → the section is hidden.
+   */
+  surroundingColors?: PaletteSwatch[];
+  /** Phase 10: close the overlay and return to moving in the world. */
+  onClose?: () => void;
+  /**
+   * Phase 10: when this flips true (hiding deadline approaching), commit the
+   * current texture ONCE so unsaved work is never lost. The server still decides
+   * whether the save lands (it rejects commits once the hunt begins).
+   */
+  autoCommit?: boolean;
 }
 
 export default function PaintStudio({
@@ -46,6 +61,9 @@ export default function PaintStudio({
   commitError = null,
   commitLabel = "この絵で準備完了",
   remainingMs,
+  surroundingColors,
+  onClose,
+  autoCommit = false,
 }: PaintStudioProps) {
   const [engine, setEngine] = useState<PaintEngine | null>(null);
   const [color, setColor] = useState("#22c55e");
@@ -71,6 +89,16 @@ export default function PaintStudio({
   useEffect(() => {
     if (engine && initialDataUrl) engine.loadDataURL(initialDataUrl).catch(() => {});
   }, [engine, initialDataUrl]);
+
+  // Phase 10: auto-commit the current texture once when the deadline nears, so a
+  // hider who is mid-stroke at time-up still saves. Guarded to fire a single time.
+  const autoCommitted = useRef(false);
+  useEffect(() => {
+    if (autoCommit && !autoCommitted.current && engine && onCommit) {
+      autoCommitted.current = true;
+      onCommit(engine.toDataURL());
+    }
+  }, [autoCommit, engine, onCommit]);
 
   // End the stroke even if the pointer is released off the model, or the browser
   // cancels it (pointercancel — common on touch when a gesture is taken over).
@@ -170,6 +198,40 @@ export default function PaintStudio({
 
       {/* Tools */}
       <div className="flex w-full flex-col gap-4 lg:w-72">
+        {/* Phase 10 in-world eyedropper: the actual surrounding surface colours, so
+            you can tap "壁 / 床 / 家具" and paint the shade you must blend into. */}
+        {surroundingColors && surroundingColors.length > 0 && (
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-muted">
+              周囲の色（タップで吸い取り）
+            </div>
+            <div className="flex gap-2">
+              {surroundingColors.map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  onClick={() => {
+                    setColor(s.color);
+                    setErase(false);
+                  }}
+                  className="flex flex-1 flex-col items-center gap-1 rounded-md bg-raised p-1.5 ring-1 ring-line"
+                  aria-label={`${s.label}の色 ${s.color}`}
+                >
+                  <span
+                    className="h-8 w-full rounded ring-1 ring-black/20"
+                    style={{
+                      backgroundColor: s.color,
+                      outline: !erase && color === s.color ? "2px solid var(--color-accent)" : "none",
+                      outlineOffset: "1px",
+                    }}
+                  />
+                  <span className="text-[11px] text-ink">{s.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div>
           <div className="mb-1.5 text-xs font-medium text-muted">カラー</div>
           <div className="grid grid-cols-7 gap-1.5">
@@ -327,6 +389,16 @@ export default function PaintStudio({
               </p>
             ) : null}
           </div>
+        )}
+
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-raised px-4 py-2.5 text-sm font-medium text-ink ring-1 ring-line"
+          >
+            ✕ 閉じて移動にもどる
+          </button>
         )}
       </div>
     </div>

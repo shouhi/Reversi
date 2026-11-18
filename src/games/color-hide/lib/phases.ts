@@ -9,7 +9,13 @@ import { PHASE_DURATION_MS } from "./constants";
  * pure and transport-agnostic: both the HTTP room service and the realtime
  * server call it, so every tier agrees on what phase a room is in at time `now`.
  *
- *   lobby → preparing → painting → hiding → seeking → result → lobby
+ *   lobby → preparing → hiding → seeking → result → lobby   (Phase 10)
+ *
+ * Phase 10 merged the old standalone "painting" phase into "hiding": painting now
+ * happens IN the world while hiders move and choose a spot. New rounds therefore
+ * go preparing → hiding directly. "painting" is still a valid Phase and still maps
+ * forward (painting → hiding) so a room that was mid-"painting" when this deployed
+ * keeps advancing safely — it is simply never entered by a fresh round.
  *
  * Entering `result` and `lobby` has side effects (freeze outcome / reset roster)
  * that the caller applies — this module only decides the *target* phase + its
@@ -19,8 +25,8 @@ import { PHASE_DURATION_MS } from "./constants";
 
 /** The next phase after each timed phase. `lobby` is terminal w.r.t. time. */
 export const LINEAR_NEXT: Record<TimedPhase, Phase> = {
-  preparing: "painting",
-  painting: "hiding",
+  preparing: "hiding", // Phase 10: skip the standalone painting phase
+  painting: "hiding", // legacy: a room stuck mid-paint still advances to hiding
   hiding: "seeking",
   seeking: "result",
   result: "lobby",
@@ -94,4 +100,16 @@ export function hidersCanMove(phase: Phase): boolean {
 /** True if the seeker is allowed to move / see the map and catch hiders. */
 export function seekerCanSeek(phase: Phase): boolean {
   return phase === "seeking";
+}
+
+/**
+ * True while a hider is allowed to commit paint (Phase 10, server-authoritative).
+ * Painting is a pre-hunt action: the server accepts commits through lobby,
+ * preparing, legacy painting, and `hiding` (the in-world paint window). The ONLY
+ * hard rule is that once the hunt begins (`seeking`) or the round ends (`result`)
+ * the server REFUSES further commits, so a client can never extend its paint time
+ * past the hiding deadline with a stale clock.
+ */
+export function paintWindowOpen(phase: Phase): boolean {
+  return phase !== "seeking" && phase !== "result";
 }

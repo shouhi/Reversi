@@ -639,3 +639,70 @@ Free：Workers 100,000 req/日、**DO 100,000 req/日**＋13,000 GB-s/日、WS�
 
 ## 9-E 品質ゲート（全PASS・ローカル）
 typecheck / cf:typecheck / lint / **vitest 543**（新 inputSend 16・realtime failsafe+spectator-move 等）/ build / **test:e2e 26** / **test:partyserver 11**（新 netcode 実測 −63% 含む）。テストの削除・無効化・スキップなし。
+
+---
+
+# Phase 10 — ワールド内ペイント・擬態システム（2026-11-18）
+
+**今回の実施範囲：設計・実装・テスト・実ブラウザ検証・ドキュメント・Draft PRのみ。** 本番Worker/Vercelデプロイ・mainマージ・Secret/Redis変更は**未実施**。ブランチ `feat/color-hide-world-paint`。
+
+## コンセプト転換
+従来：ペイント画面で先に塗る → ワールドへ入る（何色に塗ればいいか分からない）。
+Phase 10：**ワールドに入る → 隠れ場所を選ぶ → その場で周囲の色に合わせてペイントする → 鬼が探す。** ペイントは事前カスタマイズではなく、ゲーム中の戦略的アクションに。
+
+## ゲームフロー変更（後方互換を優先）
+`Lobby → Preparing → Hiding & Painting → Seeking → Result`。
+- **独立した Painting フェーズは新規ラウンドで廃止**。`phases.ts` の `LINEAR_NEXT[preparing]="hiding"` で直接 hiding へ。
+- **`"painting"` は型・`LINEAR_NEXT`（painting→hiding）・`PAINTING_MS` を残置**：デプロイ時に painting 中だったルームも安全に hiding へ進める（フェーズ削除はしない＝危険回避）。
+- `HIDING_MS` を 30s → **120s**（旧 painting 60s + hiding 30s を吸収＋3D内で場所探し・色採取の分。設計目標値）。
+- `hidersCanMove(hiding)` は従来どおり true＝隠れ役は hiding 中に移動可。
+
+## ワールド内ペイントUI（既存PaintStudio/PaintEngineを再利用）
+- `RoundView` が hiding 中の隠れ役に **「🎨 ペイント」ボタン**を表示。押すと **ライブの3Dワールドの上にオーバーレイ**で `PaintStudio` を開く（ワールドは背後に dim 表示＝消さない）。
+- 既存 `PaintEngine`（256px UVアトラス・PNG・48KB上限・UVクリッピング・Undo）をそのまま使用。パーツ別描画・色選択・ブラシ・消しゴム・全体塗り・Undo・全消去・回転・3Dプレビューを継承。
+
+## 移動／ペイントのモード切替（入力競合・押しっぱなし防止）
+- `GameScene` に `inputLocked` prop を追加。オーバーレイを開くと：押下中キーを **keysRef.clear()** で解放、`move/look/running` をゼロ化、キーボード down/up と視点ドラッグを無視、`moving=false`。→ 「モード切替時の入力押しっぱなし」バグを構造的に防止。閉じると移動モードへ復帰。
+
+## 周囲の色に合わせて塗る（スポイト）
+- `maps.ts` の `mapPalette(mapId)` が、**描画で実際に使われるマテリアル色**（`MapScene`：壁=theme.wall / 床=theme.floor / 家具=theme.accent）を「壁 / 床 / 家具」としてラベル付きで返す。
+- オーバーレイに **「周囲の色（タップで吸い取り）」** パレットとして表示＝タップで隠れ場所の色を採取して塗れる。
+- **マテリアルカラー方式**（軽量・決定論的・照明非依存）を採用。静的なマップ定義のみ由来で、**隠れ役の位置・非公開プレイヤー情報は一切使用しない**。
+
+## ペイント同期・保存（サーバー権威・既存機構維持）
+- 確定は既存 `apiCommitPaint`（`x-color-hide-token` 認証・`validatePaintPayload`・48KB上限・1/s レート制限・CAS 保存・`color-hide:paint:` 名前空間）をそのまま使用。
+- 確定成功で **自分のテクスチャを即時反映**（`paints[myId]` 更新→GameScene 再描画）。
+- **タイマー終了時の自動確定**：`PaintStudio` が残り5秒で現在のテクスチャを一度だけ自動コミット（未完成でも保存）。
+- **seeking 開始で**：オーバーレイを強制クローズ＋`apiGetPaints` を再取得（鬼・仲間に最終デザインを反映）。すべて**サーバー権威フェーズ駆動**（クライアント時計で判断しない）。
+- **未確定なら安全なデフォルトテクスチャ**（`textureForPaint(undefined)`）。
+- **保存の受付可否はサーバーが判定**：`phases.paintWindowOpen(phase)`（seeking/result で false）＝paint route が **seeking 以降のコミットを 409 `phase_closed` で拒否**。クライアントは paint 時間を延長できない。
+
+## 鬼側の体験（非公開情報をサーバーで保証）
+- hiding 中、鬼は **RoundView を描画しない待機UI**（`ColorHideRoom`）＝realtime transport を開かない → 隠れ役の位置・移動・ペイントを**一切受信しない**。残り時間は表示。探索操作は不可。
+- さらに**サーバー側で二重保証**：`net/realtime.ts` の `buildSnapshot` に `seekerCanSee` を追加し、`snapshotFor` が `seekerCanSeek(phase)` を渡す → **seeking 前は、鬼の接続が存在しても未捕獲の隠れ役を一切シリアライズしない**（§従来は幾何学的に見え得た隙を解消）。
+
+## セキュリティ（維持・強化）
+サーバー権威の `validateMove`（反テレポート・速度上限・鬼1.15×）・衝突・境界・捕獲（距離+FOV+LOS）・認証・Origin 制限・ルーム分離・40req/s・観戦者の移動禁止・観戦者への非公開は**不変**（`handleInput`/`handleCatch`/catch 判定は main とバイト一致）。**追加**：seeking 前の鬼への隠れ役非送信、保存ウィンドウのサーバー判定。通信削減ではなくフロー変更のため不正移動の新経路は生じない。
+
+## バージョン互換性（4パターン）
+`InputMsg`/`SnapshotMsg` のワイヤ形式は**不変**（buildSnapshot の第4引数はサーバー内部のみ）。`RoomMeta.phase` は従来どおり文字列。
+- **旧Client × 旧Worker**：現状（painting 経由）。
+- **新Client × 旧Worker**：ワイヤ不変で接続可。旧Worker は seeking 前の鬼可視ゲートが無い（＝従来の挙動のまま）が、新Client の鬼は hiding 中そもそも RoundView を開かない（クライアント側保証）ので漏洩しない。ペイントは hiding 中に commit＝旧Worker は paint 非関与（appのみ）なので無影響。
+- **旧Client × 新Worker**：旧Client は painting フェーズUIを使うが、新Worker（app）は新規ラウンドで painting をスキップ＝旧Clientは hiding で RoundView を表示（旧UXだが動作）。保存は新ゲートで hiding 中OK。
+- **新Client × 新Worker**：目標（全テスト合格・実ブラウザ確認済み）。
+
+**段階リリース**：Worker（app/Vercel）と Cloudflare Worker の双方に関わる。安全順序は **Cloudflare Worker 先行 → Vercel（main マージ）後追い**（Phase 9 と同様、`wrangler.production.toml`/`deploy-production.sh` を使用）。本変更はフェーズ名を増やさず（painting 残置）プロトコルも不変なので、新旧混在は上記のとおり許容。メンテ不要。**本PRではリリースを実行しない。**
+
+## テスト（全ゲートPASS・ローカル）
+typecheck / cf:typecheck / lint / **vitest 549**（新規：paintWindowOpen・mapPalette・seeker-blind-during-hiding・preparing→hiding など）/ build / **test:e2e 28**（新規：保存ウィンドウ 409・hiding 中の鬼への非送信）/ **test:partyserver 11**。削除・スキップ・無効化なし。
+
+## 実ブラウザ検証（ローカル・隔離）
+PC実機ブラウザ（localhost:3000＋ローカルRTホスト:1999、本番非接触、3人：ブラウザ＋bot×2）で確認：
+- **鬼役**：hiding 中の待機UI（世界非表示・残り時間表示）。
+- **隠れ役**：ワールド入場→3D移動→「🎨 ペイント」→**ワールド背景のままオーバーレイ**→スポイトで「壁」色を採取→全体塗りで壁色に擬態→3Dプレビュー→「この色で保存」（✓保存しました）→「閉じて移動にもどる」→seeking で自動クローズ＋**自キャラが壁色で描画（擬態）**。コンソールエラーなし。
+- **モバイル**：レスポンシブCSS（PaintStudio は lg で横並び／狭幅で縦積み）＋ `MobileControls` のタッチ操作を実装。**実機では未検証**（レイアウト・タッチ対応のみ／実機性能は未確認）。
+
+## 残課題
+- 再戦時のペイント初期化は**現状維持**（paint 名前空間は round 記録と分離され、resetForLobby で消さない＝デザインが次ラウンドへ持ち越し）。意図的変更は本PR対象外。
+- オーバーレイ中はワールドCanvas＋キャラCanvasの2つが同時描画（ペイント中のみ）＝低スペック端末で負荷増の可能性。必要なら将来 frameloop 抑制を検討。
+- モバイル実機での操作感・性能は未検証。

@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import GameScene from "./three/GameScene";
+import PaintStudio from "./paint/PaintStudio";
 import { clearTextureCache } from "./three/textures";
 import { createWsTransport, resolveWsUrl } from "../net/wsTransport";
 import type { ConnectionStatus, RealtimeTransport } from "../net/transport";
-import { apiGetPaints, getStoredToken } from "../lib/clientApi";
+import { apiCommitPaint, apiGetPaints, getStoredToken } from "../lib/clientApi";
+import { mapPalette } from "../lib/maps";
 import { sharedAudio } from "../lib/audio";
 import type { PublicPlayer, PublicRoomState, Role } from "../types";
 
@@ -38,6 +40,12 @@ export default function RoundView({
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const transportRef = useRef<RealtimeTransport | null>(null);
   const [transport, setTransport] = useState<RealtimeTransport | null>(null);
+
+  // Phase 10 — in-world paint overlay state (hiders, during the hiding phase).
+  const [paintOpen, setPaintOpen] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [committed, setCommitted] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
 
   // One transport for the whole round.
   useEffect(() => {
@@ -90,6 +98,42 @@ export default function RoundView({
   const hiders = state.players.filter((p) => p.role === "hider");
   const alive = hiders.filter((p) => !p.caught).length;
 
+  // Phase 10 — in-world painting. A hider may paint while hiding (not once caught,
+  // never during seeking). The overlay auto-saves in the final seconds so unfinished
+  // work is never lost; the server still decides whether a late save lands.
+  const isHiding = state.phase === "hiding";
+  const canPaint = myRole === "hider" && isHiding && !amICaught;
+  const autoCommit = isHiding && seconds != null && seconds <= 5;
+
+  async function commitMyPaint(dataUrl: string) {
+    setCommitting(true);
+    setCommitError(null);
+    const res = await apiCommitPaint(roomId, dataUrl);
+    setCommitting(false);
+    if (res.ok) {
+      setCommitted(true);
+      // Apply instantly to my own in-world character (and share key for others).
+      setPaints((prev) => ({ ...prev, [me.id]: dataUrl }));
+      sharedAudio().play("paintCommit");
+    } else {
+      setCommitError(res.message);
+    }
+  }
+
+  // When the hunt begins, force the paint overlay shut (movement resumes) and
+  // re-fetch everyone's confirmed paints so the final designs are on screen for the
+  // seeker + teammates. Driven by the server-authoritative phase, never guessed.
+  const prevPhase = useRef(state.phase);
+  useEffect(() => {
+    if (prevPhase.current !== "seeking" && state.phase === "seeking") {
+      setPaintOpen(false);
+      apiGetPaints(roomId).then((res) => {
+        if (res.ok) setPaints(res.data.paints);
+      });
+    }
+    prevPhase.current = state.phase;
+  }, [state.phase, roomId]);
+
   // Final-10s warning: beep once per second, but ONLY on a 1-step decrease while
   // connected — so a reconnect (which can jump the clock) never replays a burst.
   const warn = seconds != null && seconds <= 10 && seconds > 0;
@@ -107,7 +151,7 @@ export default function RoundView({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface p-3">
         <span className="rounded bg-raised px-3 py-1 text-sm font-semibold text-ink ring-1 ring-line">
-          {state.phase === "hiding" ? "🙈 隠れる時間" : "👀 探索中"}
+          {state.phase === "hiding" ? "🙈 隠れて & ペイント" : "👀 探索中"}
         </span>
         <span className="text-sm text-muted">
           あなた：{myRole === "seeker" ? "鬼" : amICaught ? "見つかった…" : "隠れる側"}
@@ -161,6 +205,7 @@ export default function RoundView({
             canMove={canMove}
             canCatch={canCatch}
             spectating={amICaught}
+            inputLocked={paintOpen}
             transport={transport}
             roster={roster}
             paints={paints}
@@ -169,6 +214,55 @@ export default function RoundView({
         ) : (
           <div className="flex h-[60vh] items-center justify-center text-muted">
             3Dシーンを準備中…
+          </div>
+        )}
+
+        {/* Phase 10 — open the in-world paint overlay (hiders, hiding phase). */}
+        {canPaint && !paintOpen && (
+          <button
+            type="button"
+            onClick={() => {
+              setPaintOpen(true);
+              sharedAudio().play("ui");
+            }}
+            className="absolute bottom-3 right-3 z-20 rounded-full bg-accent px-5 py-3 text-base font-semibold text-bg shadow-lg"
+          >
+            🎨 ペイント
+          </button>
+        )}
+
+        {/* Hint for hiders before they paint. */}
+        {canPaint && !paintOpen && (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-black/60 px-4 py-1.5 text-center text-xs text-white/90">
+            隠れ場所を決めたら「🎨 ペイント」で周囲の色に溶け込もう
+          </div>
+        )}
+
+        {/* The paint overlay sits ON TOP of the live world (which stays rendered,
+            dimmed, behind) — never a separate screen. Movement is locked while open. */}
+        {paintOpen && (
+          <div className="absolute inset-0 z-30 overflow-y-auto rounded-xl bg-black/60 p-3 backdrop-blur-sm">
+            <div className="mx-auto max-w-3xl rounded-xl border border-line bg-surface/95 p-3 shadow-2xl">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-semibold text-ink">
+                  🎨 その場でペイント — 周囲の色に溶け込もう
+                </span>
+                <span className="rounded bg-raised px-2 py-0.5 text-sm font-bold tabular-nums text-ink ring-1 ring-line">
+                  {seconds ?? "—"}s
+                </span>
+              </div>
+              <PaintStudio
+                initialDataUrl={paints[me.id] ?? null}
+                surroundingColors={mapPalette(state.mapId)}
+                onCommit={commitMyPaint}
+                committing={committing}
+                committed={committed}
+                commitError={commitError}
+                autoCommit={autoCommit}
+                onClose={() => setPaintOpen(false)}
+                commitLabel={committed ? "描き直して保存" : "この色で保存"}
+              />
+            </div>
           </div>
         )}
 

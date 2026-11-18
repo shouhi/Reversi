@@ -183,3 +183,30 @@ export function getMap(id: MapId): GameMap {
 export function allMaps(): GameMap[] {
   return [room, warehouse, toytown];
 }
+
+/** A labelled "surrounding colours" swatch for the in-world eyedropper. */
+export interface PaletteSwatch {
+  key: string;
+  label: string;
+  color: string;
+}
+
+/**
+ * The colours actually visible in a map, for the Phase 10 in-world eyedropper
+ * ("周囲の色に合わせて塗る"). These are the MATERIAL colours the renderer paints the
+ * world with (see `MapScene`): the floor plane uses `theme.floor`, tall obstacles
+ * (walls) use `theme.wall`, and low obstacles (furniture) use `theme.accent`. So a
+ * hider can tap "壁 / 床 / 家具" and paint with the exact shade they must blend into.
+ *
+ * This is the material-colour approach (cheap, deterministic, lighting-independent)
+ * the design prefers over reading rendered pixels. It derives ONLY from the static
+ * map definition — never from any player's position or other non-public state.
+ */
+export function mapPalette(id: MapId): PaletteSwatch[] {
+  const { theme } = getMap(id);
+  return [
+    { key: "wall", label: "壁", color: theme.wall },
+    { key: "floor", label: "床", color: theme.floor },
+    { key: "accent", label: "家具", color: theme.accent },
+  ];
+}

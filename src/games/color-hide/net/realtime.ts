@@ -118,9 +118,15 @@ export function buildSnapshot(
   recipient: PosedPlayer,
   players: PosedPlayer[],
   obstacles: Aabb[],
+  opts: { seekerCanSee?: boolean } = {},
 ): NetPlayer[] {
+  // Phase 10: the seeker may only ever receive hider positions once the hunt has
+  // begun (`seekerCanSeek(phase)`). During Hiding & Painting the seeker is a blind
+  // spectator, so even if a seeker connection exists we must NOT serialise any
+  // uncaught hider to it. Default true keeps the pure visibility tests unchanged.
+  const seekerCanSee = opts.seekerCanSee ?? true;
   const seekerView: SeekerState | null =
-    recipient.role === "seeker"
+    recipient.role === "seeker" && seekerCanSee
       ? { pos: recipient.pos, yaw: recipient.yaw, pitch: recipient.pitch }
       : null;
   // Only an ACTIVE (uncaught) hider may see teammates. A caught hider spectates.
@@ -393,7 +399,9 @@ export class ColorHideServer {
       if (p.playerId === recipient.playerId) recipientPosed = entry;
     }
     if (!recipientPosed) return [];
-    return buildSnapshot(recipientPosed, posed, map.obstacles);
+    return buildSnapshot(recipientPosed, posed, map.obstacles, {
+      seekerCanSee: seekerCanSeek(meta.phase),
+    });
   }
 
   // -- helpers --------------------------------------------------------------

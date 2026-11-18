@@ -1,4 +1,5 @@
-import { resolvePlayerId } from "@/games/color-hide/lib/roomService";
+import { getRoomView, resolvePlayerId } from "@/games/color-hide/lib/roomService";
+import { paintWindowOpen } from "@/games/color-hide/lib/phases";
 import {
   commitPaint,
   getPaints,
@@ -60,6 +61,21 @@ export async function POST(
     const playerId = await resolvePlayerId(roomStore.store, roomId, token);
     if (!playerId) {
       return errorResponse({ code: "not_a_player", message: "You are not in this room." });
+    }
+    // Server-authoritative save window (Phase 10): paint is only accepted while the
+    // hiding/painting window is open. Once the hunt starts (seeking) the server
+    // refuses commits, so a client cannot extend its paint time with a stale clock.
+    const view = await getRoomView(roomStore.store, roomId, token, Date.now());
+    if (view.ok && !paintWindowOpen(view.value.phase)) {
+      return jsonResponse(
+        {
+          error: {
+            code: "phase_closed",
+            message: "ペイントの受付時間が終了しました。",
+          },
+        },
+        409,
+      );
     }
     const result = await commitPaint(paintStore.store, roomId, playerId, paint);
     if (!result.ok) {
