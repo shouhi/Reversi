@@ -10,7 +10,7 @@ import {
 import { validateMove } from "../lib/movement";
 import { hidersCanMove, seekerCanSeek } from "../lib/phases";
 import { moveSpeedFor } from "../lib/balance";
-import { NET_TICK_HZ, PLAYER_RADIUS } from "../lib/constants";
+import { INPUT_STALE_MS, NET_TICK_HZ, PLAYER_RADIUS } from "../lib/constants";
 
 /**
  * COLOR HIDE — authoritative realtime netcode (transport-agnostic).
@@ -151,6 +151,15 @@ export function buildSnapshot(
     });
   }
   return out;
+}
+
+/**
+ * Failsafe mapping used when a player's input has gone stale (Phase 9-E): a moving
+ * animation ("walk"/"run") collapses to the matching stopped one. Pure + exported
+ * so the rule is unit-tested. Non-moving anims are returned unchanged by the caller.
+ */
+export function stoppedAnimFor(pose: Pose): AnimState {
+  return pose === "stand" ? "idle" : "crouch";
 }
 
 export class ColorHideServer {
@@ -328,10 +337,27 @@ export class ColorHideServer {
 
   // -- tick (per-recipient filtered snapshots) ------------------------------
 
-  /** Emits a filtered snapshot to every connected player in every room. */
+  /**
+   * Emits a filtered snapshot to every connected player in every room. Also runs
+   * the input-staleness failsafe (Phase 9-E): since the client now sends on a
+   * hybrid schedule rather than a fixed high rate, a lost "stop" packet could leave
+   * a player's last-known animation stuck in "walk"/"run". If no input has arrived
+   * for {@link INPUT_STALE_MS}, we coerce that back to a stopped anim. Position is
+   * already frozen between inputs (the server never moves a player on its own), so
+   * this only closes the cosmetic gap. It is a no-op for any client sending
+   * normally (incl. the old fixed-rate client), so it is safe across versions.
+   */
   tick(now: number): void {
     for (const [roomId, room] of this.rooms) {
       if (!room.meta || room.live.size === 0) continue;
+      for (const p of room.live.values()) {
+        if (
+          now - p.lastInputAt > INPUT_STALE_MS &&
+          (p.anim === "walk" || p.anim === "run")
+        ) {
+          p.anim = stoppedAnimFor(p.pose);
+        }
+      }
       for (const recipient of room.live.values()) {
         this.out.send(recipient.connId, {
           type: "snapshot",

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildSnapshot,
   ColorHideServer,
+  stoppedAnimFor,
   type Outbound,
   type PosedPlayer,
   type RoomMeta,
@@ -10,6 +11,7 @@ import {
 import type { ServerMsg } from "./protocol";
 import type { Aabb } from "../lib/geometry";
 import type { Vec3 } from "../types";
+import { INPUT_STALE_MS } from "../lib/constants";
 
 // ---------------------------------------------------------------------------
 // Pure snapshot filter — the security guarantee, with arbitrary geometry.
@@ -321,5 +323,105 @@ describe("P0-1: roster-only (non-connected) players are never in a snapshot", ()
     const ids = snap?.type === "snapshot" ? snap.players.map((p) => p.id) : [];
     expect(ids).toEqual(["S"]); // only the connected seeker; roster-only "A" absent
     expect(ids).not.toContain("A");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9-E — netcode optimization safety.
+// ---------------------------------------------------------------------------
+
+/** Read a player's last-broadcast field from the snapshots sent to a connection. */
+function lastSeen(h: Harness, connId: string, playerId: string) {
+  const snaps = (h.sent[connId] ?? []).filter((m) => m.type === "snapshot");
+  const last = snaps[snaps.length - 1];
+  if (last?.type !== "snapshot") return undefined;
+  return last.players.find((p) => p.id === playerId);
+}
+
+describe("stoppedAnimFor (pure failsafe mapping)", () => {
+  it("maps standing → idle and any non-standing pose → crouch", () => {
+    expect(stoppedAnimFor("stand")).toBe("idle");
+    expect(stoppedAnimFor("crouch")).toBe("crouch");
+    expect(stoppedAnimFor("lie")).toBe("crouch");
+    expect(stoppedAnimFor("ball")).toBe("crouch");
+  });
+});
+
+describe("Phase 9-E: input-staleness anim failsafe (lost 'stop' packet)", () => {
+  const clear: Vec3 = { x: -3, y: 0, z: 2 };
+
+  it("keeps a moving anim while input is fresh, then coerces it once stale", async () => {
+    h = harness("seeking");
+    await h.server.handleHello("cS", "r", "S", 0);
+    await h.server.handleHello("cA", "r", "A", 0); // the hider always sees the seeker
+    h.server.__setPose("cS", { pos: clear, yaw: 0 });
+    // Seeker reports running at t=100.
+    h.server.handleInput(
+      "cS",
+      { seq: 1, x: -3, z: 2, yaw: 0, pitch: 0, anim: "run", pose: "stand", running: true },
+      100,
+    );
+    // Fresh: the running anim is relayed as-is.
+    h.server.tick(100 + INPUT_STALE_MS - 50);
+    expect(lastSeen(h, "cA", "S")?.anim).toBe("run");
+    // Stale (no further input): coerced back to a stopped anim.
+    h.server.tick(100 + INPUT_STALE_MS + 1);
+    expect(lastSeen(h, "cA", "S")?.anim).toBe("idle");
+  });
+
+  it("coerces to 'crouch' when the stale player was crouched, and never moves them", async () => {
+    h = harness("seeking");
+    await h.server.handleHello("cS", "r", "S", 0);
+    await h.server.handleHello("cA", "r", "A", 0);
+    h.server.__setPose("cS", { pos: clear, yaw: 0 });
+    h.server.handleInput(
+      "cS",
+      { seq: 1, x: -3, z: 2, yaw: 0, pitch: 0, anim: "walk", pose: "crouch", running: false },
+      100,
+    );
+    h.server.tick(100 + INPUT_STALE_MS + 1);
+    const seen = lastSeen(h, "cA", "S");
+    expect(seen?.anim).toBe("crouch");
+    expect(seen?.x).toBeCloseTo(-3); // position frozen — failsafe never moves a player
+  });
+
+  it("is a no-op for a normally-sending client (safe across versions)", async () => {
+    // Simulates the OLD fixed-rate client: input keeps arriving, so staleness never
+    // trips and the running anim is preserved — new server ⇄ old client is safe.
+    h = harness("seeking");
+    await h.server.handleHello("cS", "r", "S", 0);
+    await h.server.handleHello("cA", "r", "A", 0);
+    h.server.__setPose("cS", { pos: clear, yaw: 0 });
+    for (let seq = 1; seq <= 5; seq++) {
+      const t = seq * 100;
+      h.server.handleInput(
+        "cS",
+        { seq, x: -3, z: 2, yaw: 0, pitch: 0, anim: "run", pose: "stand", running: true },
+        t,
+      );
+      h.server.tick(t + 1);
+    }
+    expect(lastSeen(h, "cA", "S")?.anim).toBe("run");
+  });
+});
+
+describe("Phase 9-E: a caught hider (spectator) cannot move", () => {
+  it("ignores movement input from a caught hider — position stays frozen", async () => {
+    h = harness("seeking");
+    await h.server.handleHello("cS", "r", "S", 0);
+    await h.server.handleHello("cA", "r", "A", 0);
+    const spot: Vec3 = { x: -3, y: 0, z: 2 };
+    h.server.__setPose("cA", { pos: spot, yaw: 0 });
+    // Mark A caught in the (shared) meta the netcode reads.
+    const a = h.meta.players.find((p) => p.id === "A");
+    if (a) a.caught = true;
+    h.server.handleInput(
+      "cA",
+      { seq: 1, x: -2.4, z: 2, yaw: 0, pitch: 0, anim: "walk", pose: "stand", running: false },
+      100,
+    );
+    h.server.tick(200);
+    // A still sees itself, but it did not advance toward (-2.4).
+    expect(lastSeen(h, "cA", "A")?.x).toBeCloseTo(-3);
   });
 });

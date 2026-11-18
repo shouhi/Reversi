@@ -140,6 +140,49 @@ export const DISCONNECT_TIMEOUT_MS = 15_000;
 /** Target position-broadcast rate from the realtime server, in Hz. */
 export const NET_TICK_HZ = 15;
 
+// ---------------------------------------------------------------------------
+// Input send cadence (client → server) — Phase 9-E netcode optimization
+// ---------------------------------------------------------------------------
+/**
+ * Cloudflare bills INBOUND WebSocket messages (20 received msgs = 1 request);
+ * server→client frames are free. So the real cost is how often each CLIENT sends
+ * input. The old client sent a fixed 18 Hz regardless of what the player did —
+ * wasteful in hide-and-seek, where hiders stand still for long stretches. The
+ * client now sends on a HYBRID schedule that preserves feel while cutting inbound:
+ *   • immediately on a meaningful change (move start/stop, run, crouch/pose) —
+ *     floored by {@link INPUT_EVENT_MIN_INTERVAL_MS} so rapid toggles can't flood;
+ *   • a steady, lower rate while continuously moving or looking;
+ *   • a slow heartbeat when idle (keepalive + resync after a lost packet).
+ * The pure decision lives in `lib/inputSend.ts` and is unit-tested; these knobs
+ * keep the cadence documented and tunable in one place. Local prediction is still
+ * every frame, so these never affect the local player's own responsiveness.
+ */
+/** Steady send rate while moving/looking. */
+export const INPUT_MOVE_SEND_HZ = 10;
+/** Derived interval for the steady moving/looking rate (ms). */
+export const INPUT_MOVE_SEND_INTERVAL_MS = Math.round(1000 / INPUT_MOVE_SEND_HZ);
+/**
+ * Minimum gap between event-driven sends (start/stop/run/crouch/pose). Caps bursts
+ * at 20 Hz — as responsive as the old fixed 18 Hz — while a genuine STOP is flushed
+ * within one frame of this floor (stop latency ≤ ~50 ms, better than the old 55 ms).
+ */
+export const INPUT_EVENT_MIN_INTERVAL_MS = 50;
+/** Idle keepalive: resend the latest input at least this often (1 Hz). */
+export const INPUT_HEARTBEAT_MS = 1_000;
+/** Below this position delta (world units) a move is treated as jitter (no send). */
+export const INPUT_POS_EPSILON = 0.03;
+/** Below this yaw delta (radians, ~1.1°) a look change is treated as jitter. */
+export const INPUT_YAW_EPSILON = 0.02;
+/**
+ * Server failsafe. If no input arrives from a player for this long, the server
+ * coerces a moving animation ("walk"/"run") back to a stopped one so a LOST "stop"
+ * packet can never leave a hider visually running forever. Position is already
+ * frozen between inputs (the server never moves a player on its own), so this only
+ * closes the cosmetic/anim gap. Set comfortably above {@link INPUT_HEARTBEAT_MS} so
+ * a healthy idle client (1 Hz heartbeat) never trips it; only real packet loss does.
+ */
+export const INPUT_STALE_MS = 2_500;
+
 /** All selectable maps, in difficulty order. Geometry lives in `maps/`. */
 export const MAP_IDS = ["room", "warehouse", "toytown"] as const;
 export type MapId = (typeof MAP_IDS)[number];
