@@ -17,6 +17,7 @@ import { prefersReducedMotion } from "../../lib/motion";
 import { sharedAudio } from "../../lib/audio";
 import { moveSpeedFor } from "../../lib/balance";
 import { planInputSend, type InputSample } from "../../lib/inputSend";
+import { cameraRelativeMove } from "../../lib/movementVector";
 import {
   DEFAULT_GAMEPAD_SETTINGS,
   EdgeDetector,
@@ -525,8 +526,6 @@ function SceneContents({
   // Reusable temporaries (avoid per-frame allocation).
   const tmpTarget = useMemo(() => new THREE.Vector3(), []);
   const tmpCam = useMemo(() => new THREE.Vector3(), []);
-  const fwd = useMemo(() => new THREE.Vector3(), []);
-  const right = useMemo(() => new THREE.Vector3(), []);
 
   useFrame((_state, delta) => {
     const dt = Math.min(delta, 0.05);
@@ -547,8 +546,6 @@ function SceneContents({
     const running = i.running || gp.running; // Shift OR gamepad ZR
 
     // --- movement (camera-relative, server-validated echo) ---
-    fwd.set(Math.sin(camYaw.current), 0, -Math.cos(camYaw.current));
-    right.set(fwd.z, 0, -fwd.x); // 90° clockwise of forward on XZ
     // Gamepad drives movement when its stick/d-pad is active; otherwise keyboard/touch.
     let mx = gp.moveActive ? gp.moveX : i.move.x;
     let my = gp.moveActive ? gp.moveY : i.move.y;
@@ -558,11 +555,11 @@ function SceneContents({
       mx /= Math.max(1, mlen);
       my /= Math.max(1, mlen);
       const base = moveSpeedFor(myRole, { running, crouched: pose !== "stand" });
-      const vx = (fwd.x * my + right.x * mx) * base * dt;
-      const vz = (fwd.z * my + right.z * mx) * base * dt;
+      // Phase 12 P0-3: camera-relative direction (D/→ = screen-right). Pure + tested.
+      const dir = cameraRelativeMove(camYaw.current, mx, my);
       pos.current = resolveMove(
         pos.current,
-        { x: pos.current.x + vx, y: 0, z: pos.current.z + vz },
+        { x: pos.current.x + dir.x * base * dt, y: 0, z: pos.current.z + dir.z * base * dt },
         map.obstacles,
         map.bounds,
       );
@@ -584,7 +581,10 @@ function SceneContents({
     // --- place local character ---
     if (localGroup.current) {
       localGroup.current.position.set(pos.current.x, 0, pos.current.z);
-      localGroup.current.rotation.y = camYaw.current;
+      // Phase 12 P0-3: smoothly face the aim (camYaw) so a sharp camera flick never
+      // snaps the model. Catch + the yaw sent to the server still use camYaw (aim),
+      // so the catch direction always matches where the camera/crosshair points.
+      localGroup.current.rotation.y = dampAngle(localGroup.current.rotation.y, camYaw.current, 16, dt);
     }
     if (poseGroup.current) applyPoseVisual(poseGroup.current, pose);
 

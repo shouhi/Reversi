@@ -7,8 +7,10 @@ import { test, expect, type Page } from "@playwright/test";
  * script a checkmate.
  *
  * A move is two clicks: the from-square (select) then the to-square. data-testid
- * is keyed to LOGICAL board coordinates (row,col), with the board shown in a
- * fixed orientation (Gote pieces are rotated 180° in place).
+ * is keyed to LOGICAL board coordinates (row,col), which are independent of the
+ * viewer's perspective: the board is flipped 180° in DISPLAY only for the gote
+ * viewer (own pieces at the bottom), but the logical coords these tests select by
+ * never change — so this spec is perspective-agnostic.
  */
 
 const cell = (page: Page, row: number, col: number) =>

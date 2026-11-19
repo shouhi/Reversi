@@ -268,6 +268,13 @@ export default function GameRoom({ roomId }: { roomId: string }) {
   const waiting = state.status === "waiting";
   const isMyTurn = state.status === "playing" && state.currentTurn === myRole;
   const interactive = isMyTurn && !submitting && !pendingPromotion;
+  // Phase 12 P0-1: render from the viewer's perspective — own pieces/hand at the
+  // bottom. The board flip is display-only (logic coords unchanged); the hand trays
+  // place the opponent on top and the viewer on the bottom. Spectators default to
+  // sente's view.
+  const viewer: Player = myRole ?? "sente";
+  const topOwner: Player = viewer === "gote" ? "sente" : "gote";
+  const bottomOwner: Player = viewer === "gote" ? "gote" : "sente";
 
   // Legal destinations for the current selection (board move or drop).
   const legalTargets = new Set<string>();
@@ -325,13 +332,13 @@ export default function GameRoom({ roomId }: { roomId: string }) {
         </p>
       )}
 
-      {/* Gote's hand (opponent of Sente) sits above the board. */}
+      {/* Opponent's hand sits above the board (from the viewer's perspective). */}
       <HandTray
-        owner="gote"
+        owner={topOwner}
         hands={displayPosition.hands}
-        interactive={interactive && myRole === "gote"}
-        selected={myRole === "gote" ? dropType : null}
-        isYou={myRole === "gote"}
+        interactive={interactive && myRole === topOwner}
+        selected={myRole === topOwner ? dropType : null}
+        isYou={myRole === topOwner}
         onPick={handleHandClick}
       />
 
@@ -344,6 +351,7 @@ export default function GameRoom({ roomId }: { roomId: string }) {
           lastMove={lastMove}
           checkSquare={checkSquare}
           onSquareClick={handleSquareClick}
+          viewer={viewer}
         />
 
         {pendingPromotion && promotePiece && (
@@ -387,13 +395,13 @@ export default function GameRoom({ roomId }: { roomId: string }) {
         )}
       </div>
 
-      {/* Sente's hand sits below the board. */}
+      {/* The viewer's own hand sits below the board. */}
       <HandTray
-        owner="sente"
+        owner={bottomOwner}
         hands={displayPosition.hands}
-        interactive={interactive && myRole === "sente"}
-        selected={myRole === "sente" ? dropType : null}
-        isYou={myRole === "sente"}
+        interactive={interactive && myRole === bottomOwner}
+        selected={myRole === bottomOwner ? dropType : null}
+        isYou={myRole === bottomOwner}
         onPick={handleHandClick}
       />
 
