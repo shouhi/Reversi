@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Board from "./Board";
 import SharePanel from "./SharePanel";
 import CreateRoomButton from "./CreateRoomButton";
+import RematchControls from "@/components/game/RematchControls";
 import { useRoom } from "../hooks/useRoom";
-import { apiJoinRoom, apiMove, storeToken } from "../lib/clientApi";
+import {
+  apiJoinRoom,
+  apiMove,
+  apiRequestRematch,
+  storeToken,
+} from "../lib/clientApi";
 import {
   applyMove,
   findKing,
@@ -40,6 +46,7 @@ export default function GameRoom({ roomId }: { roomId: string }) {
 
   const [submitting, setSubmitting] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [rematchBusy, setRematchBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Coord | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<{
@@ -50,6 +57,17 @@ export default function GameRoom({ roomId }: { roomId: string }) {
     null,
   );
   const [optimisticLast, setOptimisticLast] = useState<LastMove | null>(null);
+
+  // When a rematch starts a new round, drop every piece of stale local UI
+  // (optimistic board, selection, an unfinished promotion choice, notice).
+  const roundId = state?.roundId;
+  useEffect(() => {
+    setOptimisticPosition(null);
+    setOptimisticLast(null);
+    setSelected(null);
+    setPendingPromotion(null);
+    setNotice(null);
+  }, [roundId]);
 
   async function submitMove(from: Coord, to: Coord, promotion?: PieceType) {
     if (!state) return;
@@ -66,7 +84,7 @@ export default function GameRoom({ roomId }: { roomId: string }) {
       /* the move was validated before calling; ignore */
     }
 
-    const res = await apiMove(roomId, from, to, promotion);
+    const res = await apiMove(roomId, from, to, promotion, state.roundId);
     if (res.ok) {
       applyState(res.data.publicState);
     } else if (res.publicState) {
@@ -81,6 +99,20 @@ export default function GameRoom({ roomId }: { roomId: string }) {
     setOptimisticLast(null);
     setSubmitting(false);
     setPaused(false);
+  }
+
+  async function handleRematch() {
+    if (!state || rematchBusy) return;
+    setRematchBusy(true);
+    setNotice(null);
+    const res = await apiRequestRematch(roomId, state.roundId);
+    if (res.ok) {
+      applyState(res.data.publicState);
+    } else {
+      if (res.publicState) applyState(res.publicState);
+      setNotice(res.message);
+    }
+    setRematchBusy(false);
   }
 
   function handleSquareClick(row: number, col: number) {
@@ -352,7 +384,14 @@ export default function GameRoom({ roomId }: { roomId: string }) {
         </section>
       )}
 
-      {finished && <ResultPanel state={state} myRole={myRole} />}
+      {finished && (
+        <ResultPanel
+          state={state}
+          myRole={myRole}
+          onRematch={handleRematch}
+          rematchBusy={rematchBusy}
+        />
+      )}
     </Shell>
   );
 }
@@ -511,9 +550,13 @@ function TurnBanner({
 function ResultPanel({
   state,
   myRole,
+  onRematch,
+  rematchBusy,
 }: {
   state: PublicRoomState;
   myRole: Color | null;
+  onRematch: () => void;
+  rematchBusy: boolean;
 }) {
   const { winner } = state;
   let headline: string;
@@ -537,8 +580,21 @@ function ResultPanel({
       <h2 className="text-2xl font-bold text-ink" data-testid="result-headline">
         {headline}
       </h2>
-      <div className="mt-6">
-        <CreateRoomButton label="新しい対戦を始める" />
+
+      <RematchControls
+        rematch={state.rematch}
+        onRematch={onRematch}
+        busy={rematchBusy}
+      />
+
+      <div className="mt-4 border-t border-line pt-4">
+        <CreateRoomButton label="別のルームを新しく作る" />
+        <Link
+          href="/"
+          className="mt-3 block text-center text-sm text-muted underline underline-offset-4"
+        >
+          ゲーム一覧へ戻る
+        </Link>
       </div>
     </section>
   );

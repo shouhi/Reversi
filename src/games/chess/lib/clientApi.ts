@@ -119,10 +119,23 @@ export function apiMove(
   from: { row: number; col: number },
   to: { row: number; col: number },
   promotion?: PieceType,
+  roundId?: number,
 ): Promise<ApiResult<{ publicState: PublicRoomState }>> {
   return request<{ publicState: PublicRoomState }>(
     `${base}/${roomId}/move`,
-    { method: "POST", body: JSON.stringify({ from, to, promotion }) },
+    { method: "POST", body: JSON.stringify({ from, to, promotion, roundId }) },
+    roomId,
+  );
+}
+
+/** Requests (or accepts) a same-room rematch; the server needs both players' votes. */
+export function apiRequestRematch(
+  roomId: string,
+  roundId: number,
+): Promise<ApiResult<{ publicState: PublicRoomState }>> {
+  return request<{ publicState: PublicRoomState }>(
+    `${base}/${roomId}/rematch`,
+    { method: "POST", body: JSON.stringify({ roundId }) },
     roomId,
   );
 }

@@ -125,10 +125,23 @@ export interface MovePayload {
 export function apiMove(
   roomId: string,
   payload: MovePayload,
+  roundId?: number,
 ): Promise<ApiResult<{ publicState: PublicRoomState }>> {
   return request<{ publicState: PublicRoomState }>(
     `${base}/${roomId}/move`,
-    { method: "POST", body: JSON.stringify(payload) },
+    { method: "POST", body: JSON.stringify({ ...payload, roundId }) },
+    roomId,
+  );
+}
+
+/** Requests (or accepts) a same-room rematch; the server needs both players' votes. */
+export function apiRequestRematch(
+  roomId: string,
+  roundId: number,
+): Promise<ApiResult<{ publicState: PublicRoomState }>> {
+  return request<{ publicState: PublicRoomState }>(
+    `${base}/${roomId}/rematch`,
+    { method: "POST", body: JSON.stringify({ roundId }) },
     roomId,
   );
 }
