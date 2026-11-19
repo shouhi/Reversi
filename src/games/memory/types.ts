@@ -1,4 +1,5 @@
 import type { Card, Player } from "./lib/engine";
+import type { RematchState, RematchView } from "@/lib/rematch";
 
 export type RoomStatus = "waiting" | "playing" | "finished";
 export type Winner = Player | "draw" | null;
@@ -23,6 +24,8 @@ export interface RoomState {
   p1TokenHash: string;
   /** sha256 of the p2 player's token, or null until a friend joins. */
   p2TokenHash: string | null;
+  /** Same-room rematch consent + round id (see `@/lib/rematch`). */
+  rematch: RematchState;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -50,6 +53,10 @@ export interface PublicRoomState {
   status: RoomStatus;
   winner: Winner;
   version: number;
+  /** The current game-instance id; changes when a rematch starts a new round. */
+  roundId: number;
+  /** Same-room rematch consent, relative to the requesting player. */
+  rematch: RematchView;
   /** Whether each seat is occupied. */
   seats: { p1: boolean; p2: boolean };
   /** The requesting client's role, or null if they are neither player. */

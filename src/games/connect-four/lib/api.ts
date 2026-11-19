@@ -16,6 +16,8 @@ const STATUS_BY_CODE: Record<ServiceErrorCode, number> = {
   game_over: 409,
   not_your_turn: 409,
   illegal_move: 400,
+  rematch_unavailable: 409,
+  stale_round: 409,
   version_conflict: 409,
 };
 

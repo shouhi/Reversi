@@ -32,7 +32,10 @@ export async function POST(
     });
   }
 
-  const { index } = (body ?? {}) as { index?: unknown };
+  const { index, roundId } = (body ?? {}) as {
+    index?: unknown;
+    roundId?: unknown;
+  };
   if (typeof index !== "number") {
     return errorResponse({
       code: "invalid_request",
@@ -49,6 +52,7 @@ export async function POST(
       roomId,
       getMemoryToken(req),
       index,
+      typeof roundId === "number" ? roundId : undefined,
     );
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });

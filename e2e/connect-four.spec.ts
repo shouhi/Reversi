@@ -140,6 +140,66 @@ test("two players play 四目並べ to a win and recover", async ({ browser }) =
   await ctxC.close();
 });
 
+test("two players rematch in the SAME room, swap colors, and play again", async ({
+  browser,
+}) => {
+  // --- Set up a finished game (red = A wins the bottom row) --------------
+  const ctxA = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  await pageA.goto("/games/connect-four");
+  await pageA.getByRole("button", { name: "対戦ルームを作成" }).click();
+  await pageA.waitForURL(/\/games\/connect-four\/room\/[a-z0-9]+/);
+  const roomUrl = pageA.url();
+
+  const ctxB = await browser.newContext();
+  const pageB = await ctxB.newPage();
+  await pageB.goto(roomUrl);
+  await pageB.getByTestId("join-yellow").click();
+  await expect(pageB.getByTestId("board")).toBeVisible();
+
+  // red bottom row 0-3; yellow dumps into col 6.
+  await drop(pageA, 0);
+  await drop(pageB, 6);
+  await drop(pageA, 1);
+  await drop(pageB, 6);
+  await drop(pageA, 2);
+  await drop(pageB, 6);
+  await drop(pageA, 3);
+  await expect(pageA.getByTestId("result-headline")).toHaveText("あなたの勝ち！");
+
+  // --- A requests a rematch; one side alone does NOT restart ------------
+  await pageA.getByTestId("rematch").click();
+  await expect(pageA.getByTestId("rematch-waiting")).toBeVisible();
+  await expect(pageA.getByTestId("result")).toBeVisible();
+  await expect(pageB.getByTestId("rematch-opponent")).toBeVisible();
+
+  // --- B accepts → a fresh game starts in the SAME room ----------------
+  await pageB.getByTestId("rematch").click();
+  await expect(pageA.getByTestId("result")).toHaveCount(0);
+  await expect(pageB.getByTestId("result")).toHaveCount(0);
+
+  // Colors swapped: B is now red (opener), A is now yellow.
+  await expect(pageB.getByTestId("seat-red")).toContainText("あなた");
+  await expect(pageA.getByTestId("seat-yellow")).toContainText("あなた");
+  await expect(pageB.getByTestId("turn-banner")).toHaveAttribute(
+    "data-my-turn",
+    "true",
+  );
+
+  // Board reset: the previous winning bottom row is empty again.
+  await expectDisc(pageB, 5, 0, "empty");
+  // Same URL throughout — no new room, no re-invite.
+  expect(pageB.url()).toBe(roomUrl);
+
+  // New round is playable: B (now red) drops a disc.
+  await drop(pageB, 3);
+  await expectDisc(pageB, 5, 3, "red");
+  await expectDisc(pageA, 5, 3, "red");
+
+  await ctxA.close();
+  await ctxB.close();
+});
+
 test("the start page offers to create a 四目並べ room", async ({ page }) => {
   await page.goto("/games/connect-four");
   await expect(
