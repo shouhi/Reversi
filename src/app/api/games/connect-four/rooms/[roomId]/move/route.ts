@@ -32,7 +32,7 @@ export async function POST(
     });
   }
 
-  const { col } = (body ?? {}) as { col?: unknown };
+  const { col, roundId } = (body ?? {}) as { col?: unknown; roundId?: unknown };
   if (typeof col !== "number") {
     return errorResponse({
       code: "invalid_request",
@@ -49,6 +49,7 @@ export async function POST(
       roomId,
       getConnectFourToken(req),
       col,
+      typeof roundId === "number" ? roundId : undefined,
     );
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });

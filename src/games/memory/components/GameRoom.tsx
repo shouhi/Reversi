@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Board from "./Board";
 import SharePanel from "./SharePanel";
 import CreateRoomButton from "./CreateRoomButton";
+import RematchControls from "@/components/game/RematchControls";
 import { useRoom } from "../hooks/useRoom";
-import { apiJoinRoom, apiMove, storeToken } from "../lib/clientApi";
+import {
+  apiJoinRoom,
+  apiMove,
+  apiRequestRematch,
+  storeToken,
+} from "../lib/clientApi";
 import type { Player } from "../lib/engine";
 import type { PublicRoomState } from "../types";
 
@@ -18,7 +24,15 @@ export default function GameRoom({ roomId }: { roomId: string }) {
 
   const [submitting, setSubmitting] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [rematchBusy, setRematchBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // A rematch starts a new round (re-shuffled deck): clear any leftover notice so
+  // the fresh board renders cleanly. Card state itself comes from the server.
+  const roundId = state?.roundId;
+  useEffect(() => {
+    setNotice(null);
+  }, [roundId]);
 
   const myRole = state?.yourRole ?? null;
   const isMyTurn =
@@ -35,7 +49,7 @@ export default function GameRoom({ roomId }: { roomId: string }) {
 
     // No optimistic flip: we never fake a hidden card's value on the client.
     // We simply send the flip and apply the authoritative server response.
-    const res = await apiMove(roomId, index);
+    const res = await apiMove(roomId, index, state.roundId);
     if (res.ok) {
       applyState(res.data.publicState);
     } else if (res.publicState) {
@@ -48,6 +62,20 @@ export default function GameRoom({ roomId }: { roomId: string }) {
 
     setSubmitting(false);
     setPaused(false);
+  }
+
+  async function handleRematch() {
+    if (!state || rematchBusy) return;
+    setRematchBusy(true);
+    setNotice(null);
+    const res = await apiRequestRematch(roomId, state.roundId);
+    if (res.ok) {
+      applyState(res.data.publicState);
+    } else {
+      if (res.publicState) applyState(res.publicState);
+      setNotice(res.message);
+    }
+    setRematchBusy(false);
   }
 
   async function handleJoin() {
@@ -208,7 +236,14 @@ export default function GameRoom({ roomId }: { roomId: string }) {
         </section>
       )}
 
-      {finished && <ResultPanel state={state} myRole={myRole} />}
+      {finished && (
+        <ResultPanel
+          state={state}
+          myRole={myRole}
+          onRematch={handleRematch}
+          rematchBusy={rematchBusy}
+        />
+      )}
     </Shell>
   );
 }
@@ -372,9 +407,13 @@ function TurnBanner({
 function ResultPanel({
   state,
   myRole,
+  onRematch,
+  rematchBusy,
 }: {
   state: PublicRoomState;
   myRole: Player | null;
+  onRematch: () => void;
+  rematchBusy: boolean;
 }) {
   const { winner } = state;
   let headline: string;
@@ -399,8 +438,21 @@ function ResultPanel({
       <p className="mt-2 text-sm text-muted">
         プレイヤー1 {state.scores.p1}ペア ・ プレイヤー2 {state.scores.p2}ペア
       </p>
-      <div className="mt-6">
-        <CreateRoomButton label="新しい対戦を始める" />
+
+      <RematchControls
+        rematch={state.rematch}
+        onRematch={onRematch}
+        busy={rematchBusy}
+      />
+
+      <div className="mt-4 border-t border-line pt-4">
+        <CreateRoomButton label="別のルームを新しく作る" />
+        <Link
+          href="/"
+          className="mt-3 block text-center text-sm text-muted underline underline-offset-4"
+        >
+          ゲーム一覧へ戻る
+        </Link>
       </div>
     </section>
   );

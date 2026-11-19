@@ -5,6 +5,7 @@ import Link from "next/link";
 import Board from "./Board";
 import SharePanel from "./SharePanel";
 import CreateRoomButton from "./CreateRoomButton";
+import RematchControls from "@/components/game/RematchControls";
 import { useRoom } from "../hooks/useRoom";
 import {
   apiJoinRoom,
@@ -467,70 +468,5 @@ function ResultPanel({
         </Link>
       </div>
     </section>
-  );
-}
-
-/**
- * The same-room rematch control. A rematch starts only when BOTH players ask for
- * one, so this reflects four states: offer, waiting-for-opponent, accept (the
- * opponent asked first), and starting (both agreed).
- */
-function RematchControls({
-  rematch,
-  onRematch,
-  busy,
-}: {
-  rematch: PublicRoomState["rematch"];
-  onRematch: () => void;
-  busy: boolean;
-}) {
-  const { youRequested, opponentRequested } = rematch;
-
-  if (youRequested && opponentRequested) {
-    return (
-      <p
-        className="mt-6 rounded-xl bg-accent/15 px-4 py-3 text-sm font-semibold text-accent ring-1 ring-accent/40"
-        data-testid="rematch-starting"
-      >
-        次の試合を開始します…
-      </p>
-    );
-  }
-
-  if (youRequested) {
-    return (
-      <p
-        className="mt-6 rounded-xl bg-surface px-4 py-3 text-sm text-muted"
-        data-testid="rematch-waiting"
-      >
-        相手の返事を待っています…
-      </p>
-    );
-  }
-
-  return (
-    <div className="mt-6">
-      {opponentRequested && (
-        <p
-          className="mb-3 text-sm font-medium text-accent"
-          data-testid="rematch-opponent"
-        >
-          相手が再戦を希望しています
-        </p>
-      )}
-      <button
-        type="button"
-        onClick={onRematch}
-        disabled={busy}
-        data-testid="rematch"
-        className="w-full rounded-xl bg-accent px-6 py-4 text-base font-semibold text-black transition active:scale-[0.98] disabled:opacity-60"
-      >
-        {busy
-          ? "送信中…"
-          : opponentRequested
-            ? "再戦を承諾する"
-            : "もう一度遊ぶ"}
-      </button>
-    </div>
   );
 }
