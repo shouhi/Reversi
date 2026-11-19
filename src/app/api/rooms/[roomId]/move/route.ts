@@ -32,7 +32,11 @@ export async function POST(
     });
   }
 
-  const { row, col } = (body ?? {}) as { row?: unknown; col?: unknown };
+  const { row, col, roundId } = (body ?? {}) as {
+    row?: unknown;
+    col?: unknown;
+    roundId?: unknown;
+  };
   if (typeof row !== "number" || typeof col !== "number") {
     return errorResponse({
       code: "invalid_request",
@@ -50,6 +54,7 @@ export async function POST(
       getReversiToken(req),
       row,
       col,
+      typeof roundId === "number" ? roundId : undefined,
     );
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });

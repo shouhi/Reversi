@@ -5,9 +5,11 @@ import {
   joinRoom,
   playMove,
   getRoomView,
+  requestRematch,
   TICTACTOE_ROOM_PREFIX,
 } from "./roomService";
 import { hashToken } from "@/lib/tokens";
+import { initialRematch } from "@/lib/rematch";
 import type { RoomState } from "../types";
 import type { Board } from "./engine";
 
@@ -216,6 +218,7 @@ describe("playMove — winning & drawing", () => {
       xTokenHash: hashToken(xToken),
       lastMove: null,
       winningLine: null,
+      rematch: initialRematch(),
       version: 5,
       createdAt: 1,
       updatedAt: 1,
@@ -245,5 +248,204 @@ describe("playMove — double operation", () => {
 
     const view = await getRoomView(store, roomId, oToken);
     expect(view.ok && view.value.version).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rematch (same room, same players)
+// ---------------------------------------------------------------------------
+
+/** Plays a quick ○ win (top row) and returns a finished game + both tokens. */
+async function finishedGame() {
+  const g = await startedGame();
+  await playMove(g.store, g.roomId, g.oToken, 0, 0);
+  await playMove(g.store, g.roomId, g.xToken, 1, 0);
+  await playMove(g.store, g.roomId, g.oToken, 0, 1);
+  await playMove(g.store, g.roomId, g.xToken, 1, 1);
+  const last = await playMove(g.store, g.roomId, g.oToken, 0, 2);
+  if (!last.ok || last.value.status !== "finished") {
+    throw new Error("setup: game did not finish");
+  }
+  return g;
+}
+
+describe("requestRematch", () => {
+  it("one-sided request does NOT start a new game", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+
+    const r = await requestRematch(store, roomId, oToken, 1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.status).toBe("finished"); // still finished — waiting for the other
+    expect(r.value.roundId).toBe(1);
+    expect(r.value.rematch.youRequested).toBe(true);
+    expect(r.value.rematch.opponentRequested).toBe(false);
+
+    // The opponent sees the pending request but the game has not restarted.
+    const xView = await getRoomView(store, roomId, xToken);
+    expect(xView.ok && xView.value.status).toBe("finished");
+    expect(xView.ok && xView.value.rematch.opponentRequested).toBe(true);
+    expect(xView.ok && xView.value.rematch.youRequested).toBe(false);
+  });
+
+  it("works the same when only × requests first", async () => {
+    const { store, roomId, xToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, xToken, 1);
+    expect(r.ok && r.value.status).toBe("finished");
+    expect(r.ok && r.value.rematch.youRequested).toBe(true);
+  });
+
+  it("both requests start a new round, reset the board, and swap seats", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+
+    await requestRematch(store, roomId, oToken, 1);
+    const second = await requestRematch(store, roomId, xToken, 1);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+
+    expect(second.value.status).toBe("playing");
+    expect(second.value.roundId).toBe(2);
+    expect(second.value.winner).toBeNull();
+    expect(second.value.winningLine).toBeNull();
+    expect(second.value.lastMove).toBeNull();
+    // board cleared to the empty 3×3
+    expect(second.value.board.flat().every((c) => c === null)).toBe(true);
+    // votes cleared for the new round
+    expect(second.value.rematch.youRequested).toBe(false);
+    expect(second.value.rematch.opponentRequested).toBe(false);
+
+    // Seat swap: the previous × (second player) is now ○ and moves first.
+    const oView = await getRoomView(store, roomId, oToken);
+    const xView = await getRoomView(store, roomId, xToken);
+    expect(oView.ok && oView.value.yourRole).toBe("x");
+    expect(xView.ok && xView.value.yourRole).toBe("o");
+    expect(second.value.currentTurn).toBe("o"); // ○ (now the old ×) opens
+  });
+
+  it("is idempotent: repeat votes keep a single pending request", async () => {
+    const { store, roomId, oToken } = await finishedGame();
+    const first = await requestRematch(store, roomId, oToken, 1);
+    const again = await requestRematch(store, roomId, oToken, 1);
+    if (!first.ok || !again.ok) throw new Error("rematch vote failed");
+    expect(again.value.status).toBe("finished");
+    expect(again.value.roundId).toBe(1);
+    // No extra version churn from the duplicate (first bumped once, second no-op).
+    expect(again.value.version).toBe(first.value.version);
+  });
+
+  it("concurrent requests from both players start exactly one new round", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+    await Promise.all([
+      requestRematch(store, roomId, oToken, 1),
+      requestRematch(store, roomId, xToken, 1),
+    ]);
+    const view = await getRoomView(store, roomId, oToken);
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    expect(view.value.status).toBe("playing");
+    expect(view.value.roundId).toBe(2); // exactly one advance, not two
+    expect(view.value.rematch.youRequested).toBe(false);
+  });
+
+  it("rejects a non-player token", async () => {
+    const { store, roomId } = await finishedGame();
+    const r = await requestRematch(store, roomId, "not-a-player", 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("not_a_player");
+  });
+
+  it("rejects a missing token", async () => {
+    const { store, roomId } = await finishedGame();
+    const r = await requestRematch(store, roomId, null, 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("not_a_player");
+  });
+
+  it("rejects a rematch while the game is still in progress", async () => {
+    const { store, roomId, oToken } = await startedGame();
+    const r = await requestRematch(store, roomId, oToken, 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("rematch_unavailable");
+  });
+
+  it("rejects a stale roundId", async () => {
+    const { store, roomId, oToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, oToken, 0); // round 0 no longer current
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("stale_round");
+  });
+
+  it("supports a legal move in the new round, and a fresh finish", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+    await requestRematch(store, roomId, oToken, 1);
+    await requestRematch(store, roomId, xToken, 1);
+    // Round 2: seats swapped, so xToken is now ○ (first). Play a quick ○ win.
+    await playMove(store, roomId, xToken, 0, 0, 2);
+    await playMove(store, roomId, oToken, 1, 0, 2);
+    await playMove(store, roomId, xToken, 0, 1, 2);
+    await playMove(store, roomId, oToken, 1, 1, 2);
+    const win = await playMove(store, roomId, xToken, 0, 2, 2);
+    expect(win.ok).toBe(true);
+    if (!win.ok) return;
+    expect(win.value.status).toBe("finished");
+    expect(win.value.winner).toBe("o"); // the ○ seat (old ×) won round 2
+  });
+
+  it("rejects an old-round move after a rematch (stale operation)", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+    await requestRematch(store, roomId, oToken, 1);
+    await requestRematch(store, roomId, xToken, 1);
+    // A move tagged with the OLD round must not touch the new game.
+    const stale = await playMove(store, roomId, xToken, 0, 0, 1);
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.error.code).toBe("stale_round");
+    expect(stale.error.publicState?.roundId).toBe(2);
+  });
+
+  it("survives three consecutive rematches, alternating who opens", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+    let round = 1;
+    for (const expectedRound of [2, 3, 4]) {
+      await requestRematch(store, roomId, oToken, round);
+      const done = await requestRematch(store, roomId, xToken, round);
+      expect(done.ok && done.value.roundId).toBe(expectedRound);
+      round = expectedRound;
+      // whoever holds the ○ seat this round must be the opener
+      const oView = await getRoomView(store, roomId, oToken);
+      expect(oView.ok && oView.value.status).toBe("playing");
+      // re-finish so the next rematch is allowed
+      const o = oView.ok && oView.value.yourRole === "o" ? oToken : xToken;
+      const x = o === oToken ? xToken : oToken;
+      await playMove(store, roomId, o, 0, 0, expectedRound);
+      await playMove(store, roomId, x, 1, 0, expectedRound);
+      await playMove(store, roomId, o, 0, 1, expectedRound);
+      await playMove(store, roomId, x, 1, 1, expectedRound);
+      await playMove(store, roomId, o, 0, 2, expectedRound);
+    }
+  });
+
+  it("reconnect (getRoomView) restores the pending rematch state", async () => {
+    const { store, roomId, oToken, xToken } = await finishedGame();
+    await requestRematch(store, roomId, oToken, 1);
+    // Simulate the opponent reloading: a fresh view reflects the pending request.
+    const reconnected = await getRoomView(store, roomId, xToken);
+    expect(reconnected.ok).toBe(true);
+    if (!reconnected.ok) return;
+    expect(reconnected.value.roundId).toBe(1);
+    expect(reconnected.value.rematch.opponentRequested).toBe(true);
+    expect(reconnected.value.rematch.youRequested).toBe(false);
+  });
+
+  it("never leaks token hashes through the rematch view", async () => {
+    const { store, roomId, oToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, oToken, 1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(JSON.stringify(r.value)).not.toContain("TokenHash");
   });
 });

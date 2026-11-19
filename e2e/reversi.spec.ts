@@ -1,4 +1,10 @@
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
+import { getValidMoves, type Board, type Player } from "../src/games/reversi/lib/engine";
 
 /**
  * End-to-end: two independent browser contexts (two "devices") play a shared
@@ -8,6 +14,38 @@ import { test, expect, type Page } from "@playwright/test";
 
 const stoneAt = (page: Page, row: number, col: number) =>
   page.getByTestId(`cell-${row}-${col}`);
+
+const H = (token: string) => ({ "x-reversi-token": token });
+
+/**
+ * Drives a reversi game to completion over the HTTP API (fast — no polling
+ * waits), always playing a legal move for whoever is to move. Returns the
+ * finished public state. Used to reach a finished game for the rematch test
+ * without scripting ~40 UI clicks.
+ */
+async function finishGameViaApi(
+  request: APIRequestContext,
+  roomId: string,
+  blackToken: string,
+  whiteToken: string,
+) {
+  for (let ply = 0; ply < 120; ply++) {
+    const res = await request.get(`/api/rooms/${roomId}`, { headers: H(blackToken) });
+    const { publicState } = await res.json();
+    if (publicState.status === "finished") return publicState;
+    const turn: Player = publicState.currentTurn;
+    const board: Board = publicState.board;
+    const moves = getValidMoves(board, turn);
+    if (moves.length === 0) throw new Error("no legal move but game not finished");
+    const [row, col] = moves[0];
+    const mv = await request.post(`/api/rooms/${roomId}/move`, {
+      headers: { ...H(turn === "black" ? blackToken : whiteToken) },
+      data: { row, col, roundId: publicState.roundId },
+    });
+    if (!mv.ok()) throw new Error(`move failed: ${mv.status()}`);
+  }
+  throw new Error("game did not finish within 120 plies");
+}
 
 async function expectStone(
   page: Page,
@@ -111,6 +149,75 @@ test("two players create, join, play in sync, and recover", async ({
   await ctxA.close();
   await ctxB.close();
   await ctxC.close();
+});
+
+test("two players rematch in the SAME room, swap colors, and play again", async ({
+  browser,
+  request,
+}) => {
+  // --- Create + join over the API, then play the game out to a finish ----
+  const created = await request.post("/api/rooms");
+  const { roomId, token: blackToken } = await created.json();
+  const joined = await request.post(`/api/rooms/${roomId}/join`);
+  const { token: whiteToken } = await joined.json();
+  const finished = await finishGameViaApi(request, roomId, blackToken, whiteToken);
+  expect(finished.status).toBe("finished");
+
+  const roomUrl = `/room/${roomId}`;
+
+  // --- Open two browsers as the two players (inject their tokens) --------
+  const ctxA = await browser.newContext();
+  await ctxA.addInitScript(
+    (t: { k: string; v: string }) => localStorage.setItem(t.k, t.v),
+    { k: `reversi:token:${roomId}`, v: blackToken },
+  );
+  const pageA = await ctxA.newPage();
+  await pageA.goto(roomUrl);
+
+  const ctxB = await browser.newContext();
+  await ctxB.addInitScript(
+    (t: { k: string; v: string }) => localStorage.setItem(t.k, t.v),
+    { k: `reversi:token:${roomId}`, v: whiteToken },
+  );
+  const pageB = await ctxB.newPage();
+  await pageB.goto(roomUrl);
+
+  // Both see the finished game; A was black, B was white.
+  await expect(pageA.getByTestId("result")).toBeVisible();
+  await expect(pageB.getByTestId("result")).toBeVisible();
+  await expect(pageA.getByTestId("score-black")).toContainText("あなた");
+  await expect(pageB.getByTestId("score-white")).toContainText("あなた");
+
+  // --- A requests a rematch; one side alone does NOT restart ------------
+  await pageA.getByTestId("rematch").click();
+  await expect(pageA.getByTestId("rematch-waiting")).toBeVisible();
+  await expect(pageA.getByTestId("result")).toBeVisible(); // still finished
+  await expect(pageB.getByTestId("rematch-opponent")).toBeVisible();
+
+  // --- B accepts → a fresh game starts in the SAME room -----------------
+  await pageB.getByTestId("rematch").click();
+  await expect(pageA.getByTestId("result")).toHaveCount(0);
+  await expect(pageB.getByTestId("result")).toHaveCount(0);
+
+  // Board reset to the 2–2 opening; colors swapped (B now black & opens).
+  await expect(pageA.getByTestId("count-black")).toHaveText("2");
+  await expect(pageB.getByTestId("count-black")).toHaveText("2");
+  await expect(pageB.getByTestId("score-black")).toContainText("あなた");
+  await expect(pageA.getByTestId("score-white")).toContainText("あなた");
+  await expect(pageB.getByTestId("turn-banner")).toHaveAttribute(
+    "data-my-turn",
+    "true",
+  );
+
+  // Same URL throughout — no new room, no re-invite.
+  expect(pageB.url()).toContain(`/room/${roomId}`);
+
+  // New round is playable: B (now black) makes a legal opening move.
+  await pageB.locator('[data-hint="true"]').first().click();
+  await expect(pageB.getByTestId("count-black")).not.toHaveText("2");
+
+  await ctxA.close();
+  await ctxB.close();
 });
 
 test("an unknown room shows a friendly error", async ({ page }) => {

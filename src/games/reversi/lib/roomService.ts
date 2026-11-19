@@ -8,8 +8,20 @@ import {
   type Player,
 } from "./engine";
 import { generateRoomId, generateToken, hashToken } from "@/lib/tokens";
+import {
+  addVote,
+  allVoted,
+  getRematch,
+  hasVoted,
+  initialRematch,
+  nextRound,
+  toRematchView,
+} from "@/lib/rematch";
 import type { PublicRoomState, RoomState } from "../types";
 import type { KvStore } from "@/lib/store";
+
+/** The two seats, used by the rematch consent check. */
+const SEATS: readonly Player[] = ["black", "white"];
 
 /** The Reversi room store: a versioned-record KV store of RoomState. */
 export type RoomStore = KvStore<RoomState>;
@@ -31,6 +43,8 @@ export type ServiceErrorCode =
   | "game_over"
   | "not_your_turn"
   | "illegal_move"
+  | "rematch_unavailable"
+  | "stale_round"
   | "version_conflict";
 
 export interface ServiceError {
@@ -67,6 +81,7 @@ export function toPublicRoomState(
   state: RoomState,
   callerTokenHash: string | null,
 ): PublicRoomState {
+  const rematch = getRematch(state);
   return {
     roomId: state.roomId,
     board: state.board,
@@ -76,6 +91,8 @@ export function toPublicRoomState(
     lastMove: state.lastMove,
     version: state.version,
     scores: countPieces(state.board),
+    roundId: rematch.roundId,
+    rematch: toRematchView(rematch, roleOf(state, callerTokenHash)),
     seats: {
       black: Boolean(state.blackTokenHash),
       white: state.whiteTokenHash !== null,
@@ -113,6 +130,7 @@ export async function createRoom(
       blackTokenHash: tokenHash,
       whiteTokenHash: null,
       lastMove: null,
+      rematch: initialRematch(),
       version: 1,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -199,6 +217,7 @@ export async function joinRoom(
       whiteTokenHash: newHash,
       status: "playing",
       currentTurn: "black",
+      rematch: getRematch(state),
       version: state.version + 1,
       updatedAt: now(),
     };
@@ -237,6 +256,12 @@ export async function playMove(
   token: string | null,
   row: number,
   col: number,
+  /**
+   * The round the client believes it is playing. When provided, a move whose
+   * round no longer matches the server's is rejected (an old game's operation is
+   * never applied to a new one). Omitted by legacy callers → no round check.
+   */
+  expectedRoundId?: number,
 ): Promise<Result<PublicRoomState>> {
   if (
     !Number.isInteger(row) ||
@@ -268,6 +293,17 @@ export async function playMove(
     }
 
     const view = () => toPublicRoomState(state, tokenHash);
+
+    if (
+      expectedRoundId !== undefined &&
+      expectedRoundId !== getRematch(state).roundId
+    ) {
+      return fail(
+        "stale_round",
+        "This game has moved on to a new round. Re-syncing…",
+        view(),
+      );
+    }
 
     if (state.status === "finished") {
       return fail("game_over", "This game has already finished.", view());
@@ -312,6 +348,7 @@ export async function playMove(
       status,
       winner,
       lastMove: { row, col },
+      rematch: getRematch(state),
       version: state.version + 1,
       updatedAt: now(),
     };
@@ -336,6 +373,111 @@ export async function playMove(
   return fail(
     "version_conflict",
     "The board changed while you were moving. Re-syncing…",
+    latest ? toPublicRoomState(latest, tokenHash) : undefined,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rematch (same room, same players) — two-sided consent, server-authoritative
+// ---------------------------------------------------------------------------
+
+/**
+ * Records the caller's rematch vote for the finished game. A new round starts
+ * ONLY once BOTH players have voted; a single vote never resets the board. The
+ * seats are swapped so the previous white plays black (first) — fair alternation,
+ * and rule-correct since black always opens in Reversi. Concurrency-safe via CAS.
+ */
+export async function requestRematch(
+  store: RoomStore,
+  roomId: string,
+  token: string | null,
+  /** The round the client is voting on; a stale id is rejected. */
+  expectedRoundId?: number,
+): Promise<Result<PublicRoomState>> {
+  if (!token) {
+    return fail("not_a_player", "A player token is required to rematch.");
+  }
+  const tokenHash = hashToken(token);
+
+  for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
+    const state = await store.get(roomId);
+    if (!state) {
+      return fail("not_found", "This room does not exist or has expired.");
+    }
+
+    const role = roleOf(state, tokenHash);
+    if (!role) {
+      return fail("not_a_player", "You are not a player in this room.");
+    }
+
+    const view = () => toPublicRoomState(state, tokenHash);
+    const rematch = getRematch(state);
+
+    if (state.status !== "finished") {
+      return fail(
+        "rematch_unavailable",
+        "A rematch can only be requested after the game has finished.",
+        view(),
+      );
+    }
+    if (expectedRoundId !== undefined && expectedRoundId !== rematch.roundId) {
+      return fail(
+        "stale_round",
+        "This room has already moved on. Re-syncing…",
+        view(),
+      );
+    }
+
+    // Idempotent: a repeat vote that cannot yet start a round is a no-op.
+    if (hasVoted(rematch, role) && !allVoted(rematch, SEATS)) {
+      return ok(view());
+    }
+
+    const voted = addVote(rematch, role);
+    const starting = allVoted(voted, SEATS);
+
+    const nextState: RoomState = starting
+      ? {
+          ...state,
+          board: createInitialBoard(),
+          currentTurn: "black",
+          status: "playing",
+          winner: null,
+          lastMove: null,
+          // Swap seats: the previous white becomes black (first). Both are
+          // present because the game is finished (it cannot finish one-sided).
+          blackTokenHash: state.whiteTokenHash ?? state.blackTokenHash,
+          whiteTokenHash: state.blackTokenHash,
+          rematch: nextRound(voted),
+          version: state.version + 1,
+          updatedAt: now(),
+        }
+      : {
+          ...state,
+          rematch: voted,
+          version: state.version + 1,
+          updatedAt: now(),
+        };
+
+    const cas = await store.compareAndSwap(
+      roomId,
+      state.version,
+      nextState,
+      ROOM_TTL_SECONDS,
+    );
+    if (cas === "ok") {
+      return ok(toPublicRoomState(nextState, tokenHash));
+    }
+    if (cas === "not_found") {
+      return fail("not_found", "This room no longer exists.");
+    }
+    // conflict → another request changed the room; loop re-reads and re-evaluates.
+  }
+
+  const latest = await store.get(roomId);
+  return fail(
+    "version_conflict",
+    "The room is changing too quickly. Please try again.",
     latest ? toPublicRoomState(latest, tokenHash) : undefined,
   );
 }
