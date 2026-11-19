@@ -2,6 +2,7 @@
 
 import type { Coord, Piece, Position } from "../lib/engine";
 import type { LastMove } from "../types";
+import { toLogicCoord, viewerFlipped } from "../lib/orientation";
 
 export const squareKey = (row: number, col: number) => `${row},${col}`;
 
@@ -65,6 +66,7 @@ export default function Board({
   lastMove,
   checkSquare,
   onSquareClick,
+  viewer = "sente",
 }: {
   position: Position;
   interactive: boolean;
@@ -76,8 +78,17 @@ export default function Board({
   /** The king's square when the side to move is in check, else null. */
   checkSquare: Coord | null;
   onSquareClick: (row: number, col: number) => void;
+  /**
+   * Phase 12 P0-1: whose perspective to render from. The board is flipped 180° for
+   * the gote viewer so their own pieces sit at the BOTTOM — but ONLY the display
+   * position/orientation is transformed. The logic coordinates passed to
+   * `onSquareClick`, the `data-testid`/aria, and the game state are untouched, so
+   * the rules engine and tests still speak in canonical (row,col).
+   */
+  viewer?: Piece["owner"];
 }) {
   const board = position.board;
+  const flip = viewerFlipped(viewer);
 
   const lastFromKey =
     lastMove && lastMove.from
@@ -95,8 +106,11 @@ export default function Board({
       role="grid"
       aria-label="将棋盤"
     >
-      {range.map((row) =>
-        range.map((col) => {
+      {range.map((dr) =>
+        range.map((dc) => {
+          // Display slot (dr,dc) → logic coord (row,col). Flipped for the gote
+          // viewer; everything below (clicks, testids, markers) stays logical.
+          const { row, col } = toLogicCoord(dr, dc, flip);
           const key = squareKey(row, col);
           const piece = board[row][col];
           const isSelected = selectedKey === key;
@@ -134,7 +148,8 @@ export default function Board({
                   aria-hidden
                   className={[
                     "text-zinc-900",
-                    piece.owner === "gote" ? "rotate-180" : "",
+                    // Opponent's pieces face the viewer upside-down (own upright).
+                    piece.owner !== viewer ? "rotate-180" : "",
                     piece.promoted &&
                     (piece.type === "KA" ||
                       piece.type === "HI" ||
