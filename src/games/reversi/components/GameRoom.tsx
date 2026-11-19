@@ -1,12 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Board, { cellKey } from "./Board";
 import SharePanel from "./SharePanel";
 import CreateRoomButton from "./CreateRoomButton";
 import { useRoom } from "../hooks/useRoom";
-import { apiJoinRoom, apiMove, storeToken } from "../lib/clientApi";
+import {
+  apiJoinRoom,
+  apiMove,
+  apiRequestRematch,
+  storeToken,
+} from "../lib/clientApi";
 import {
   applyMove as applyMoveToBoard,
   getValidMoves,
@@ -24,12 +29,22 @@ export default function GameRoom({ roomId }: { roomId: string }) {
 
   const [submitting, setSubmitting] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [rematchBusy, setRematchBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [optimisticBoard, setOptimisticBoard] = useState<BoardType | null>(null);
   const [optimisticLast, setOptimisticLast] = useState<{
     row: number;
     col: number;
   } | null>(null);
+
+  // When a rematch starts a new round, drop any stale local UI (optimistic board,
+  // leftover notice) so the fresh game renders cleanly.
+  const roundId = state?.roundId;
+  useEffect(() => {
+    setOptimisticBoard(null);
+    setOptimisticLast(null);
+    setNotice(null);
+  }, [roundId]);
 
   const displayBoard = optimisticBoard ?? state?.board ?? null;
   const myRole = state?.yourRole ?? null;
@@ -61,7 +76,7 @@ export default function GameRoom({ roomId }: { roomId: string }) {
       /* isValidMove guarded this; ignore */
     }
 
-    const res = await apiMove(roomId, row, col);
+    const res = await apiMove(roomId, row, col, state.roundId);
     if (res.ok) {
       applyState(res.data.publicState);
     } else if (res.publicState) {
@@ -76,6 +91,20 @@ export default function GameRoom({ roomId }: { roomId: string }) {
     setOptimisticLast(null);
     setSubmitting(false);
     setPaused(false);
+  }
+
+  async function handleRematch() {
+    if (!state || rematchBusy) return;
+    setRematchBusy(true);
+    setNotice(null);
+    const res = await apiRequestRematch(roomId, state.roundId);
+    if (res.ok) {
+      applyState(res.data.publicState);
+    } else {
+      if (res.publicState) applyState(res.publicState);
+      setNotice(res.message);
+    }
+    setRematchBusy(false);
   }
 
   async function handleJoin() {
@@ -236,7 +265,14 @@ export default function GameRoom({ roomId }: { roomId: string }) {
         </section>
       )}
 
-      {finished && <ResultPanel state={state} myRole={myRole} />}
+      {finished && (
+        <ResultPanel
+          state={state}
+          myRole={myRole}
+          onRematch={handleRematch}
+          rematchBusy={rematchBusy}
+        />
+      )}
     </Shell>
   );
 }
@@ -401,9 +437,13 @@ function TurnBanner({
 function ResultPanel({
   state,
   myRole,
+  onRematch,
+  rematchBusy,
 }: {
   state: PublicRoomState;
   myRole: Player | null;
+  onRematch: () => void;
+  rematchBusy: boolean;
 }) {
   const { winner, scores } = state;
   let headline: string;
@@ -429,9 +469,87 @@ function ResultPanel({
         黒 <span className="font-semibold text-ink">{scores.black}</span> ー{" "}
         <span className="font-semibold text-ink">{scores.white}</span> 白
       </p>
-      <div className="mt-6">
-        <CreateRoomButton label="新しい対戦を始める" />
+
+      <RematchControls
+        rematch={state.rematch}
+        onRematch={onRematch}
+        busy={rematchBusy}
+      />
+
+      <div className="mt-4 border-t border-line pt-4">
+        <CreateRoomButton label="別のルームを新しく作る" />
+        <Link
+          href="/"
+          className="mt-3 block text-center text-sm text-muted underline underline-offset-4"
+        >
+          ゲーム一覧へ戻る
+        </Link>
       </div>
     </section>
+  );
+}
+
+/**
+ * The same-room rematch control. A rematch starts only when BOTH players ask for
+ * one, so this reflects four states: offer, waiting-for-opponent, accept (the
+ * opponent asked first), and starting (both agreed).
+ */
+function RematchControls({
+  rematch,
+  onRematch,
+  busy,
+}: {
+  rematch: PublicRoomState["rematch"];
+  onRematch: () => void;
+  busy: boolean;
+}) {
+  const { youRequested, opponentRequested } = rematch;
+
+  if (youRequested && opponentRequested) {
+    return (
+      <p
+        className="mt-6 rounded-xl bg-accent/15 px-4 py-3 text-sm font-semibold text-accent ring-1 ring-accent/40"
+        data-testid="rematch-starting"
+      >
+        次の試合を開始します…
+      </p>
+    );
+  }
+
+  if (youRequested) {
+    return (
+      <p
+        className="mt-6 rounded-xl bg-surface px-4 py-3 text-sm text-muted"
+        data-testid="rematch-waiting"
+      >
+        相手の返事を待っています…
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-6">
+      {opponentRequested && (
+        <p
+          className="mb-3 text-sm font-medium text-accent"
+          data-testid="rematch-opponent"
+        >
+          相手が再戦を希望しています
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onRematch}
+        disabled={busy}
+        data-testid="rematch"
+        className="w-full rounded-xl bg-accent px-6 py-4 text-base font-semibold text-black transition active:scale-[0.98] disabled:opacity-60"
+      >
+        {busy
+          ? "送信中…"
+          : opponentRequested
+            ? "再戦を承諾する"
+            : "もう一度遊ぶ"}
+      </button>
+    </div>
   );
 }
