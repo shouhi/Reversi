@@ -123,6 +123,62 @@ test("two players play Fool's mate to checkmate and recover", async ({
   await ctxC.close();
 });
 
+test("two players rematch in the SAME room, swap colors, and play again", async ({
+  browser,
+}) => {
+  // --- Set up a finished game via Fool's mate (Black wins) ---------------
+  const ctxA = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  await pageA.goto("/games/chess");
+  await pageA.getByRole("button", { name: "対戦ルームを作成" }).click();
+  await pageA.waitForURL(/\/games\/chess\/room\/[a-z0-9]+/);
+  const roomUrl = pageA.url();
+
+  const ctxB = await browser.newContext();
+  const pageB = await ctxB.newPage();
+  await pageB.goto(roomUrl);
+  await pageB.getByTestId("join-black").click();
+  await expect(pageB.getByTestId("board")).toBeVisible();
+
+  await move(pageA, [6, 5], [5, 5]); // 1. f3
+  await move(pageB, [1, 4], [3, 4]); // 1... e5
+  await move(pageA, [6, 6], [4, 6]); // 2. g4
+  await move(pageB, [0, 3], [4, 7]); // 2... Qh4#
+  await expect(pageB.getByTestId("result-headline")).toHaveText("あなたの勝ち！");
+
+  // --- Black requests a rematch; one side alone does NOT restart --------
+  await pageB.getByTestId("rematch").click();
+  await expect(pageB.getByTestId("rematch-waiting")).toBeVisible();
+  await expect(pageB.getByTestId("result")).toBeVisible();
+  await expect(pageA.getByTestId("rematch-opponent")).toBeVisible();
+
+  // --- White accepts → a fresh game starts in the SAME room ------------
+  await pageA.getByTestId("rematch").click();
+  await expect(pageA.getByTestId("result")).toHaveCount(0);
+  await expect(pageB.getByTestId("result")).toHaveCount(0);
+
+  // Colors swapped: A (was White) is now Black; B (was Black) is now White & opens.
+  await expect(pageB.getByTestId("seat-white")).toContainText("あなた");
+  await expect(pageA.getByTestId("seat-black")).toContainText("あなた");
+  await expect(pageB.getByTestId("turn-banner")).toHaveAttribute(
+    "data-my-turn",
+    "true",
+  );
+
+  // Board reset to the initial position (logical coords): queen home, h4 empty.
+  await expectPiece(pageB, 0, 3, "bq"); // black queen back on d8
+  await expectPiece(pageB, 4, 7, "empty"); // the mating square is clear again
+  expect(pageB.url()).toBe(roomUrl);
+
+  // New round is playable: White (B) opens with e2-e4.
+  await move(pageB, [6, 4], [4, 4]);
+  await expectPiece(pageB, 4, 4, "wp");
+  await expectPiece(pageA, 4, 4, "wp");
+
+  await ctxA.close();
+  await ctxB.close();
+});
+
 test("the chess start page can create a room", async ({ page }) => {
   await page.goto("/games/chess");
   await expect(

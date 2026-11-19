@@ -42,10 +42,11 @@ export async function POST(
     });
   }
 
-  const { from, to, promotion } = (body ?? {}) as {
+  const { from, to, promotion, roundId } = (body ?? {}) as {
     from?: unknown;
     to?: unknown;
     promotion?: unknown;
+    roundId?: unknown;
   };
 
   const fromCoord = readCoord(from);
@@ -82,6 +83,7 @@ export async function POST(
       fromCoord,
       toCoord,
       promo,
+      typeof roundId === "number" ? roundId : undefined,
     );
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });

@@ -1,4 +1,5 @@
 import type { DroppableType, Player, Position } from "./lib/engine";
+import type { RematchState, RematchView } from "@/lib/rematch";
 
 export type RoomStatus = "waiting" | "playing" | "finished";
 /** Shogi has no draws (sennichite is not implemented), so the winner is a player or null. */
@@ -35,6 +36,8 @@ export interface RoomState {
   senteTokenHash: string;
   /** sha256 of Gote's token, or null until a friend joins. */
   goteTokenHash: string | null;
+  /** Same-room rematch consent + round id (see `@/lib/rematch`). */
+  rematch: RematchState;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -54,6 +57,10 @@ export interface PublicRoomState {
   lastMove: LastMove | null;
   check: boolean;
   version: number;
+  /** The current game-instance id; changes when a rematch starts a new round. */
+  roundId: number;
+  /** Same-room rematch consent, relative to the requesting player. */
+  rematch: RematchView;
   /** Whether each seat is occupied. */
   seats: { sente: boolean; gote: boolean };
   /** The requesting client's role, or null if they are neither player. */

@@ -39,7 +39,10 @@ export async function POST(
 
   // The roomService performs the full structural + legality validation; here we
   // just forward the raw fields it understands.
-  const { from, to, promote, drop } = (body ?? {}) as Record<string, unknown>;
+  const { from, to, promote, drop, roundId } = (body ?? {}) as Record<
+    string,
+    unknown
+  >;
   const payload: MovePayload = {
     from: from as MovePayload["from"],
     to: to as MovePayload["to"],
@@ -56,6 +59,7 @@ export async function POST(
       roomId,
       getShogiToken(req),
       payload,
+      typeof roundId === "number" ? roundId : undefined,
     );
     if (!result.ok) return errorResponse(result.error);
     return jsonResponse({ publicState: result.value });

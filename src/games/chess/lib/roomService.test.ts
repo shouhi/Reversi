@@ -5,9 +5,11 @@ import {
   joinRoom,
   playMove,
   getRoomView,
+  requestRematch,
   CHESS_ROOM_PREFIX,
 } from "./roomService";
 import { hashToken } from "@/lib/tokens";
+import { createInitialPosition, getLegalMoves } from "./engine";
 import type { RoomState } from "../types";
 import type { Coord } from "./engine";
 
@@ -221,5 +223,167 @@ describe("playMove — double operation", () => {
 
     const view = await getRoomView(store, roomId, whiteToken);
     expect(view.ok && view.value.version).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rematch (same room, same players)
+// ---------------------------------------------------------------------------
+
+/** Plays Fool's mate (black mates white) and returns a finished game + tokens. */
+async function finishedGame() {
+  const g = await startedGame();
+  await playMove(g.store, g.roomId, g.whiteToken, sq(6, 5), sq(5, 5)); // f3
+  await playMove(g.store, g.roomId, g.blackToken, sq(1, 4), sq(3, 4)); // e5
+  await playMove(g.store, g.roomId, g.whiteToken, sq(6, 6), sq(4, 6)); // g4
+  const mate = await playMove(g.store, g.roomId, g.blackToken, sq(0, 3), sq(4, 7)); // Qh4#
+  if (!mate.ok || mate.value.status !== "finished") {
+    throw new Error("setup: game did not reach checkmate");
+  }
+  return g;
+}
+
+/** Forces the current round to a finished state (isolated test helper). */
+async function forceFinish(store: ReturnType<typeof freshStore>, roomId: string) {
+  const s = await store.get(roomId);
+  if (!s) throw new Error("forceFinish: no room");
+  const cas = await store.compareAndSwap(
+    roomId,
+    s.version,
+    { ...s, status: "finished", winner: "white", version: s.version + 1 },
+    3600,
+  );
+  if (cas !== "ok") throw new Error("forceFinish: cas " + cas);
+}
+
+describe("requestRematch", () => {
+  it("one-sided request does NOT start a new game", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, whiteToken, 1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.status).toBe("finished");
+    expect(r.value.roundId).toBe(1);
+    expect(r.value.rematch.youRequested).toBe(true);
+    const b = await getRoomView(store, roomId, blackToken);
+    expect(b.ok && b.value.rematch.opponentRequested).toBe(true);
+  });
+
+  it("both requests start a new round from the true initial position, swap colors", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    await requestRematch(store, roomId, whiteToken, 1);
+    const second = await requestRematch(store, roomId, blackToken, 1);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.status).toBe("playing");
+    expect(second.value.roundId).toBe(2);
+    expect(second.value.winner).toBeNull();
+    expect(second.value.check).toBe(false);
+    expect(second.value.lastMove).toBeNull();
+    expect(second.value.currentTurn).toBe("white");
+    // Full position reset — board, active color, castling rights, en passant.
+    expect(second.value.position).toEqual(createInitialPosition());
+    expect(second.value.rematch.youRequested).toBe(false);
+    // Colors swapped: the previous Black now plays White (opens).
+    const whiteView = await getRoomView(store, roomId, whiteToken);
+    const blackView = await getRoomView(store, roomId, blackToken);
+    expect(whiteView.ok && whiteView.value.yourRole).toBe("black");
+    expect(blackView.ok && blackView.value.yourRole).toBe("white");
+  });
+
+  it("is idempotent: repeat votes keep a single pending request", async () => {
+    const { store, roomId, whiteToken } = await finishedGame();
+    const first = await requestRematch(store, roomId, whiteToken, 1);
+    const again = await requestRematch(store, roomId, whiteToken, 1);
+    if (!first.ok || !again.ok) throw new Error("vote failed");
+    expect(again.value.version).toBe(first.value.version);
+  });
+
+  it("concurrent requests start exactly one new round", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    await Promise.all([
+      requestRematch(store, roomId, whiteToken, 1),
+      requestRematch(store, roomId, blackToken, 1),
+    ]);
+    const view = await getRoomView(store, roomId, whiteToken);
+    expect(view.ok && view.value.roundId).toBe(2);
+    expect(view.ok && view.value.status).toBe("playing");
+  });
+
+  it("rejects a non-player token", async () => {
+    const { store, roomId } = await finishedGame();
+    const r = await requestRematch(store, roomId, "outsider", 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("not_a_player");
+  });
+
+  it("rejects a rematch while the game is in progress", async () => {
+    const { store, roomId, whiteToken } = await startedGame();
+    const r = await requestRematch(store, roomId, whiteToken, 1);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("rematch_unavailable");
+  });
+
+  it("rejects a stale roundId", async () => {
+    const { store, roomId, whiteToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, whiteToken, 99);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("stale_round");
+  });
+
+  it("allows a legal move in the new round (white = the swapped player)", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    await requestRematch(store, roomId, whiteToken, 1);
+    const started = await requestRematch(store, roomId, blackToken, 1);
+    if (!started.ok) throw new Error();
+    // blackToken now plays White (opens). Pick a real legal pawn move.
+    const legal = getLegalMoves(started.value.position, sq(6, 4)); // e2
+    expect(legal.length).toBeGreaterThan(0);
+    const moved = await playMove(store, roomId, blackToken, sq(6, 4), legal[0].to, undefined, 2);
+    expect(moved.ok).toBe(true);
+  });
+
+  it("rejects an old-round move after a rematch (stale operation)", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    await requestRematch(store, roomId, whiteToken, 1);
+    await requestRematch(store, roomId, blackToken, 1);
+    const stale = await playMove(store, roomId, blackToken, sq(6, 4), sq(4, 4), undefined, 1);
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.error.code).toBe("stale_round");
+    expect(stale.error.publicState?.roundId).toBe(2);
+  });
+
+  it("survives three consecutive rematches, alternating the opening color", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    for (const expectedRound of [2, 3, 4]) {
+      await requestRematch(store, roomId, whiteToken, expectedRound - 1);
+      const done = await requestRematch(store, roomId, blackToken, expectedRound - 1);
+      expect(done.ok && done.value.roundId).toBe(expectedRound);
+      await forceFinish(store, roomId);
+    }
+    const view = await getRoomView(store, roomId, whiteToken);
+    expect(view.ok && view.value.roundId).toBe(4);
+    expect(view.ok && view.value.yourRole).toBe("black"); // 3 swaps
+  });
+
+  it("reconnect (getRoomView) restores the pending rematch state", async () => {
+    const { store, roomId, whiteToken, blackToken } = await finishedGame();
+    await requestRematch(store, roomId, whiteToken, 1);
+    const reconnected = await getRoomView(store, roomId, blackToken);
+    expect(reconnected.ok).toBe(true);
+    if (!reconnected.ok) return;
+    expect(reconnected.value.rematch.opponentRequested).toBe(true);
+  });
+
+  it("never leaks token hashes through the rematch view", async () => {
+    const { store, roomId, whiteToken } = await finishedGame();
+    const r = await requestRematch(store, roomId, whiteToken, 1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(JSON.stringify(r.value)).not.toContain("TokenHash");
   });
 });
