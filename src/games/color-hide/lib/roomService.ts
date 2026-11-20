@@ -183,6 +183,74 @@ export function applyPhaseProgress(state: RoomState, now: number): RoomState {
 }
 
 // ---------------------------------------------------------------------------
+// Host continuity + roster hygiene (server-authoritative, deterministic)
+// ---------------------------------------------------------------------------
+
+/** Refreshes the caller's heartbeat so normalization sees an acting player as live. */
+function touchSeen(
+  state: RoomState,
+  callerHash: string | null,
+  now: number,
+): RoomState {
+  if (!callerHash) return state;
+  if (!state.players.some((p) => p.tokenHash === callerHash)) return state;
+  return {
+    ...state,
+    players: state.players.map((p) =>
+      p.tokenHash === callerHash ? { ...p, lastSeen: now } : p,
+    ),
+  };
+}
+
+/**
+ * Keeps the room continuously playable regardless of who comes and goes. Pure and
+ * deterministic (same inputs → same output) so concurrent CAS writers converge:
+ *
+ *  1. HOST CONTINUITY — there must be exactly ONE host, and it must be a CONNECTED
+ *     player whenever one exists. If the current host is missing or disconnected,
+ *     the host flag migrates to the earliest-joined connected player (tiebreak: id).
+ *     A reconnecting old host does NOT reclaim the role (no double host). The host
+ *     is computed purely from connection state — a client can never name the host.
+ *  2. LOBBY HYGIENE — in the lobby only, players who have been gone beyond the
+ *     disconnect grace are pruned so ghosts can't linger or block the ready-gate.
+ *     Never prunes the whole roster, and never prunes mid-round (roles/seeker stay
+ *     intact). Host is a lobby-authority flag only; migrating it never affects
+ *     positions, visibility, roles, or the catch path.
+ */
+export function normalizeRoom(state: RoomState, now: number): RoomState {
+  let players = state.players;
+
+  // (1) Lobby hygiene: drop long-disconnected players (keep ≥1).
+  if (state.phase === "lobby") {
+    const live = players.filter((p) => isConnected(p, now));
+    if (live.length > 0 && live.length < players.length) players = live;
+  }
+
+  // (2) Host continuity: resolve the single, connected-preferred host id.
+  const hosts = players.filter((p) => p.isHost);
+  const connectedHost = hosts.find((p) => isConnected(p, now));
+  let hostId: string | null = connectedHost?.id ?? null;
+  if (!hostId) {
+    const connected = players.filter((p) => isConnected(p, now));
+    const pool = connected.length > 0 ? connected : players;
+    if (pool.length > 0) {
+      hostId = [...pool].sort(
+        (a, b) => a.joinedAt - b.joinedAt || (a.id < b.id ? -1 : 1),
+      )[0].id;
+    }
+  }
+
+  const hostCorrect =
+    hosts.length === 1 && hostId !== null && hosts[0].id === hostId;
+  if (players === state.players && hostCorrect) return state;
+
+  return {
+    ...state,
+    players: players.map((p) => ({ ...p, isHost: p.id === hostId })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
 
@@ -286,23 +354,21 @@ export async function getRoomView(
       );
     }
 
-    const progressed = applyPhaseProgress(state, now);
+    // Refresh the caller's heartbeat first, then roll the phase forward and keep the
+    // host/roster healthy (migrate host off a departed player, prune lobby ghosts).
+    const progressed = normalizeRoom(
+      touchSeen(applyPhaseProgress(state, now), callerHash, now),
+      now,
+    );
     const me = playerByHash(progressed, callerHash);
 
-    // Nothing to persist: phase unchanged and caller is not a member (no beat).
+    // Nothing changed and the caller is not a member → no write needed.
     if (progressed === state && !me) {
       return ok(toPublicRoomState(state, callerHash, now));
     }
 
-    const nextPlayers = me
-      ? progressed.players.map((p) =>
-          p.tokenHash === callerHash ? { ...p, lastSeen: now } : p,
-        )
-      : progressed.players;
-
     const nextState: RoomState = {
       ...progressed,
-      players: nextPlayers,
       version: state.version + 1,
       updatedAt: now,
     };
@@ -358,17 +424,18 @@ export async function joinRoom(
       );
     }
 
-    // Reconnect: an existing member just refreshes their heartbeat.
+    // Reconnect: an existing member refreshes their heartbeat; normalization then
+    // keeps the host healthy (a reconnecting old host never reclaims the role).
     const existing = playerByHash(state, callerHash);
     if (existing) {
       const nextState: RoomState = {
-        ...applyPhaseProgress(state, now),
+        ...normalizeRoom(
+          touchSeen(applyPhaseProgress(state, now), callerHash, now),
+          now,
+        ),
         version: state.version + 1,
         updatedAt: now,
       };
-      nextState.players = nextState.players.map((p) =>
-        p.tokenHash === callerHash ? { ...p, lastSeen: now } : p,
-      );
       const cas = await store.compareAndSwap(roomId, state.version, nextState, ROOM_TTL_SECONDS);
       if (cas === "ok") {
         return ok({
@@ -410,8 +477,12 @@ export async function joinRoom(
       joinedAt: now,
     };
     const nextState: RoomState = {
-      ...state,
-      players: [...state.players, newPlayer],
+      // Normalize so joining a room whose host departed installs a connected host
+      // and clears any lobby ghosts in the same write.
+      ...normalizeRoom(
+        { ...state, players: [...state.players, newPlayer] },
+        now,
+      ),
       version: state.version + 1,
       updatedAt: now,
     };
@@ -452,13 +523,20 @@ async function mutate(
     const state = await store.get(roomId);
     if (!state) return fail("not_found", "This room does not exist or has expired.");
 
-    const progressed = applyPhaseProgress(state, now);
+    // Pre-edit: refresh the caller's heartbeat + normalize so the host flag (used by
+    // the host-only guards below) already reflects any migration off a departed host.
+    const progressed = normalizeRoom(
+      touchSeen(applyPhaseProgress(state, now), callerHash, now),
+      now,
+    );
     const me = playerByHash(progressed, callerHash);
     const edited = edit(progressed, me, callerHash);
     if (!edited.ok) return edited;
 
+    // Post-edit: normalize again so an edit that removes/departs a player (e.g. the
+    // host leaving) hands the host flag to a remaining connected player atomically.
     const nextState: RoomState = {
-      ...edited.value,
+      ...normalizeRoom(edited.value, now),
       version: state.version + 1,
       updatedAt: now,
     };
@@ -543,21 +621,26 @@ export function startGame(
     if (!me) return fail("not_a_player", "You are not in this room.");
     if (!me.isHost) return fail("not_host", "Only the host can start the game.");
     if (state.phase !== "lobby") return fail("bad_phase", "A round is already underway.");
-    if (state.players.length < MIN_PLAYERS)
-      return fail("not_enough_players", `Need at least ${MIN_PLAYERS} players.`);
-    if (!state.players.every((p) => p.ready))
+
+    // Gate on CONNECTED players only: a player who has left must neither block the
+    // start (they can't un-ready) nor join the round as a ghost. The round begins
+    // with exactly the connected, ready roster.
+    const active = state.players.filter((p) => isConnected(p, now));
+    if (active.length < MIN_PLAYERS)
+      return fail("not_enough_players", `Need at least ${MIN_PLAYERS} connected players.`);
+    if (!active.every((p) => p.ready))
       return fail("not_all_ready", "Everyone must be ready first.");
 
     // Fair role rotation: avoid immediately re-picking the previous seeker when
     // there is another candidate (at 2 players this guarantees the role alternates).
     const prev = state.prevSeekerId ?? state.seekerId ?? null;
-    let candidates = state.players;
-    if (state.players.length >= 2 && prev) {
-      const rest = state.players.filter((p) => p.id !== prev);
+    let candidates = active;
+    if (active.length >= 2 && prev) {
+      const rest = active.filter((p) => p.id !== prev);
       if (rest.length > 0) candidates = rest;
     }
     const seeker = candidates[Math.floor(rng() * candidates.length)];
-    const players = state.players.map((p): PlayerRecord => ({
+    const players = active.map((p): PlayerRecord => ({
       ...p,
       role: (p.id === seeker.id ? "seeker" : "hider") as Role,
       caught: false,
@@ -639,5 +722,43 @@ export function returnToLobby(
     if (!me) return fail("not_a_player", "You are not in this room.");
     if (!me.isHost) return fail("not_host", "Only the host can return to the lobby.");
     return ok(resetForLobby(state, now));
+  });
+}
+
+/**
+ * Explicit leave (distinct from a silent disconnect): the caller departs now instead
+ * of waiting out the disconnect grace. It marks the caller as gone (backdating their
+ * heartbeat just past the disconnect grace, clock-agnostic); `mutate`'s post-edit
+ * normalization then (a) migrates the host flag to a remaining
+ * connected player immediately if the leaver was the host, and (b) in the lobby,
+ * prunes them from the roster. During an active round the roster/roles/seeker stay
+ * intact (they're pruned at the next lobby) so the round can still finish. Idempotent;
+ * a player may only ever leave themselves — the host is never client-specified.
+ *
+ * This is deliberately a user-initiated action (a "leave" button), NOT fired from a
+ * page-unload handler: a browser refresh would otherwise evict the player, and they'd
+ * lose their token identity instead of reconnecting. A refresh/tab-close/network drop
+ * is handled by the ordinary disconnect grace + host migration.
+ */
+export function leaveRoom(
+  store: RoomStore,
+  roomId: string,
+  token: string | null,
+  now: number = Date.now(),
+): Promise<Result<PublicRoomState>> {
+  // Mark the leaver as having gone silent *relative to now* (just past the grace),
+  // so they read as disconnected on any clock. A real reconnect refreshes lastSeen.
+  const departedAt = now - DISCONNECT_TIMEOUT_MS - 1;
+  return mutate(store, roomId, token, now, (state, me) => {
+    // Non-member (or already pruned after a prior leave): fail BEFORE the CAS write
+    // so a stray/duplicate leave never churns the room version. The client ignores
+    // this result (it navigates away regardless).
+    if (!me) return fail("not_a_player", "You are not in this room.");
+    return ok({
+      ...state,
+      players: state.players.map((p) =>
+        p.id === me.id ? { ...p, lastSeen: departedAt } : p,
+      ),
+    });
   });
 }

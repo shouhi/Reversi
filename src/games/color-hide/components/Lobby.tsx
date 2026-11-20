@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  apiLeaveRoom,
   apiReturnToLobby,
   apiSelectMap,
   apiSetNickname,
@@ -35,9 +36,20 @@ export default function Lobby({ roomId, state, me, onChanged }: LobbyProps) {
   const [quality, setQuality] = useState<QualityPref>(() => getQualityPref());
 
   const isHost = me.isHost;
-  const readyCount = state.players.filter((p) => p.ready).length;
+  // Start eligibility mirrors the server: only CONNECTED players count (a player who
+  // left can't un-ready, so they must not block the start or pad the minimum).
+  const connectedPlayers = state.players.filter((p) => p.connected);
+  const readyCount = connectedPlayers.filter((p) => p.ready).length;
   const canStart =
-    state.players.length >= MIN_PLAYERS && state.players.every((p) => p.ready);
+    connectedPlayers.length >= MIN_PLAYERS &&
+    connectedPlayers.every((p) => p.ready);
+
+  async function handleLeave() {
+    sharedAudio().play("ui");
+    setBusy(true);
+    await apiLeaveRoom(roomId);
+    window.location.href = "/";
+  }
 
   async function run(fn: () => Promise<{ ok: boolean } & Record<string, unknown>>) {
     sharedAudio().play("ui");
@@ -247,6 +259,15 @@ export default function Lobby({ roomId, state, me, onChanged }: LobbyProps) {
             {error}
           </p>
         )}
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={handleLeave}
+          className="w-full rounded-md px-4 py-2 text-sm text-muted underline underline-offset-4 disabled:opacity-40"
+        >
+          退出する
+        </button>
       </div>
     </div>
   );
