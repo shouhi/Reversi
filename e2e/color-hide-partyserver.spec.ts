@@ -86,6 +86,18 @@ async function start(request: APIRequestContext, roomId: string, token: string) 
 async function getRoom(request: APIRequestContext, roomId: string) {
   return (await (await request.get(`/api/games/color-hide/rooms/${roomId}`)).json()).publicState;
 }
+async function getRoomAs(request: APIRequestContext, roomId: string, token: string) {
+  const r = await request.get(`/api/games/color-hide/rooms/${roomId}`, {
+    headers: { "x-color-hide-token": token },
+  });
+  return (await r.json()).publicState;
+}
+async function leave(request: APIRequestContext, roomId: string, token: string) {
+  return request.post(`/api/games/color-hide/rooms/${roomId}/action`, {
+    headers: { "x-color-hide-token": token },
+    data: { action: "leave" },
+  });
+}
 async function waitForPhase(request: APIRequestContext, roomId: string, phase: string, ms = 25_000) {
   const deadline = Date.now() + ms;
   let last = "";
@@ -511,4 +523,51 @@ test("NETCODE: the hybrid send planner cuts inbound messages vs a fixed rate (re
   seeker.close();
   mover.close();
   obs.close();
+});
+
+test("HOST CONTINUITY: host leaves → a remaining player becomes host and starts a rematch over the real DO", async ({
+  request,
+}) => {
+  // Three players in a fresh lobby over the real app.
+  const host = await createRoom(request, "Host");
+  const p1 = (await join(request, host.roomId, "P1")).body;
+  const p2 = (await join(request, host.roomId, "P2")).body;
+  expect(p1?.token && p2?.token).toBeTruthy();
+
+  // The host explicitly leaves the lobby.
+  const left = await leave(request, host.roomId, host.token);
+  expect(left.ok()).toBeTruthy();
+
+  // A remaining player polls → the server has migrated the host flag to a connected
+  // remaining player and pruned the departed host. Exactly one host; not the old one.
+  const view = await getRoomAs(request, host.roomId, p1.token);
+  const hosts = view.players.filter((p: { isHost: boolean }) => p.isHost);
+  expect(hosts).toHaveLength(1);
+  expect(hosts[0].connected).toBe(true);
+  expect(view.players.some((p: { id: string }) => p.id === host.playerId)).toBe(false);
+  const newHostId: string = hosts[0].id;
+  const newHostToken = newHostId === p1.playerId ? p1.token : p2.token;
+  const otherToken = newHostToken === p1.token ? p2.token : p1.token;
+
+  // The departed host can no longer drive the room.
+  const ghostStart = await request.post(
+    `/api/games/color-hide/rooms/${host.roomId}/action`,
+    { headers: { "x-color-hide-token": host.token }, data: { action: "start" } },
+  );
+  expect(ghostStart.ok()).toBeFalsy();
+
+  // The two remaining players ready up and the MIGRATED host starts the next round.
+  await ready(request, host.roomId, newHostToken);
+  await ready(request, host.roomId, otherToken);
+  await start(request, host.roomId, newHostToken); // asserts ok internally
+  const started = await getRoom(request, host.roomId);
+  expect(started.phase).toBe("preparing");
+  expect(started.seekerId).toBeTruthy();
+
+  // The round is genuinely live over the real Durable Object: the new host connects
+  // and is welcomed with a role (confirms the migrated-host round runs end-to-end).
+  const conn = await connect(host.roomId, newHostId, newHostToken);
+  await conn.waitFor((c) => c.welcome !== undefined, 5_000);
+  expect(conn.welcome?.role === "seeker" || conn.welcome?.role === "hider").toBe(true);
+  conn.close();
 });

@@ -5,15 +5,19 @@ import {
   createRoom,
   getRoomView,
   joinRoom,
+  leaveRoom,
   markCaught,
+  normalizeRoom,
   returnToLobby,
   selectMap,
   setReady,
   startGame,
   type RoomStore,
 } from "./roomService";
-import type { RoomState } from "../types";
+import type { PlayerRecord, RoomState } from "../types";
 import {
+  DEFAULT_MAP_ID,
+  DISCONNECT_TIMEOUT_MS,
   MAX_PLAYERS,
   PREPARING_MS,
   PAINTING_MS,
@@ -266,5 +270,250 @@ describe("phase progression over time (server clock)", () => {
     expect(back.value.seekerId).toBeNull();
     expect(back.value.players.every((p) => p.role === null)).toBe(true);
     expect(back.value.players.every((p) => p.ready === false)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host continuity (Phase 13-A): migration, lobby hygiene, explicit leave
+// ---------------------------------------------------------------------------
+
+function mkPlayer(id: string, over: Partial<PlayerRecord> = {}): PlayerRecord {
+  return {
+    id,
+    tokenHash: `hash-${id}`,
+    nickname: id,
+    isHost: false,
+    ready: false,
+    role: null,
+    caught: false,
+    lastSeen: 1000,
+    joinedAt: 1000,
+    ...over,
+  };
+}
+function mkState(players: PlayerRecord[], over: Partial<RoomState> = {}): RoomState {
+  return {
+    roomId: "r",
+    phase: "lobby",
+    phaseStartedAt: 1000,
+    mapId: DEFAULT_MAP_ID,
+    players,
+    seekerId: null,
+    round: 0,
+    result: null,
+    version: 1,
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...over,
+  };
+}
+const hostsOf = (s: RoomState) => s.players.filter((p) => p.isHost);
+
+describe("normalizeRoom — host continuity (pure)", () => {
+  const FAR = 1000 + DISCONNECT_TIMEOUT_MS + 10_000; // everyone from t=1000 is stale at FAR
+
+  it("migrates host to the earliest-joined CONNECTED player when the host is gone", () => {
+    const now = FAR;
+    const s = mkState([
+      mkPlayer("A", { isHost: true, lastSeen: 1000 }), // disconnected host
+      mkPlayer("B", { joinedAt: 2000, lastSeen: now }), // connected, joined later
+      mkPlayer("C", { joinedAt: 1500, lastSeen: now }), // connected, joined earlier
+    ]);
+    const out = normalizeRoom(s, now);
+    // A is a disconnected host in the lobby → pruned; host goes to the earliest-joined
+    // connected player (C, joined 1500 < B 2000).
+    expect(out.players.map((p) => p.id).sort()).toEqual(["B", "C"]);
+    expect(hostsOf(out).map((p) => p.id)).toEqual(["C"]);
+  });
+
+  it("leaves a connected host untouched (no needless churn)", () => {
+    const now = 2000;
+    const s = mkState([
+      mkPlayer("A", { isHost: true, lastSeen: now }),
+      mkPlayer("B", { lastSeen: now }),
+    ]);
+    expect(normalizeRoom(s, now)).toBe(s); // same reference → no change
+  });
+
+  it("collapses multiple host flags to exactly one (double-host prevention)", () => {
+    const now = 2000;
+    const s = mkState([
+      mkPlayer("A", { isHost: true, lastSeen: now }),
+      mkPlayer("B", { isHost: true, lastSeen: now }),
+    ]);
+    const out = normalizeRoom(s, now);
+    expect(hostsOf(out)).toHaveLength(1);
+  });
+
+  it("does NOT prune disconnected players mid-round (keeps roles/seeker intact)", () => {
+    const now = FAR;
+    const s = mkState(
+      [
+        mkPlayer("A", { isHost: true, lastSeen: 1000, role: "hider" }),
+        mkPlayer("B", { lastSeen: now, role: "seeker" }),
+      ],
+      { phase: "seeking", seekerId: "B" },
+    );
+    const out = normalizeRoom(s, now);
+    expect(out.players.map((p) => p.id).sort()).toEqual(["A", "B"]); // A kept mid-round
+    expect(hostsOf(out).map((p) => p.id)).toEqual(["B"]); // host migrated to connected B
+    expect(out.seekerId).toBe("B");
+  });
+
+  it("assigns a deterministic single host even if all are disconnected (self-heals on reconnect)", () => {
+    const now = FAR;
+    const s = mkState([
+      mkPlayer("A", { isHost: true, lastSeen: 1000, joinedAt: 3000 }),
+      mkPlayer("B", { lastSeen: 1000, joinedAt: 1000 }),
+    ]);
+    const out = normalizeRoom(s, now);
+    expect(hostsOf(out)).toHaveLength(1);
+    expect(hostsOf(out)[0].id).toBe("B"); // earliest joined
+  });
+
+  it("is idempotent", () => {
+    const now = FAR;
+    const s = mkState([
+      mkPlayer("A", { isHost: true, lastSeen: 1000 }),
+      mkPlayer("B", { lastSeen: now }),
+    ]);
+    const once = normalizeRoom(s, now);
+    expect(normalizeRoom(once, now)).toBe(once);
+  });
+});
+
+describe("host continuity — integration (via the store)", () => {
+  const T0 = 1000;
+  const GONE = T0 + DISCONNECT_TIMEOUT_MS + 5_000; // host silent since T0 → disconnected
+
+  it("a remaining player's poll migrates the host off a silently-disconnected host", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    // Only P1 polls later; the host (and P2) stay silent since T0.
+    const v = await getRoomView(store, roomId, tokens[1], GONE);
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    const hosts = v.value.players.filter((p) => p.isHost);
+    expect(hosts).toHaveLength(1);
+    expect(hosts[0].id).toBe(v.value.yourId); // P1 is the only connected player → host
+    expect(hosts[0].connected).toBe(true);
+    // The disconnected host + P2 were pruned from the lobby.
+    expect(v.value.players).toHaveLength(1);
+  });
+
+  it("explicit leave migrates the host and removes the leaver (lobby)", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    const left = await leaveRoom(store, roomId, tokens[0], T0 + 100); // host leaves
+    expect(left.ok).toBe(true);
+    const v = await getRoomView(store, roomId, tokens[1], T0 + 200);
+    if (!v.ok) return;
+    expect(v.value.players.some((p) => p.isHost === true)).toBe(true);
+    expect(v.value.players.filter((p) => p.isHost)).toHaveLength(1);
+    // the old host is gone (pruned in lobby), a connected player holds the host flag
+    expect(v.value.players.length).toBe(2);
+    expect(v.value.players.find((p) => p.isHost)?.connected).toBe(true);
+  });
+
+  it("a reconnecting old host does NOT reclaim the host (no double host)", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    // Everyone ready, host starts a round so the roster is kept mid-round.
+    for (const t of tokens) await setReady(store, roomId, t, true, T0);
+    const started = await startGame(store, roomId, tokens[0], T0);
+    expect(started.ok).toBe(true);
+    // Mid-round: host goes silent; P1 + P2 keep polling → host migrates to one of them.
+    const mid = T0 + DISCONNECT_TIMEOUT_MS + 2_000; // still "painting" (well before result)
+    await getRoomView(store, roomId, tokens[1], mid);
+    const v1 = await getRoomView(store, roomId, tokens[2], mid);
+    if (!v1.ok) return;
+    const newHostId = v1.value.players.find((p) => p.isHost)?.id;
+    expect(newHostId).toBeDefined();
+    expect(v1.value.players.filter((p) => p.isHost)).toHaveLength(1);
+    const oldHostId = v1.value.players.find((p) => p.nickname === "Host")?.id;
+    expect(newHostId).not.toBe(oldHostId);
+    // Old host reconnects — must NOT become host again.
+    const back = await getRoomView(store, roomId, tokens[0], mid + 500);
+    if (!back.ok) return;
+    expect(back.value.players.filter((p) => p.isHost)).toHaveLength(1);
+    expect(back.value.players.find((p) => p.isHost)?.id).toBe(newHostId);
+    const oldHost = back.value.players.find((p) => p.id === oldHostId);
+    expect(oldHost?.isHost).toBe(false);
+  });
+
+  it("concurrent polls after the host leaves still yield exactly one host", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    await Promise.all([
+      getRoomView(store, roomId, tokens[1], GONE),
+      getRoomView(store, roomId, tokens[2], GONE),
+    ]);
+    const v = await getRoomView(store, roomId, tokens[1], GONE + 100);
+    if (!v.ok) return;
+    expect(v.value.players.filter((p) => p.isHost)).toHaveLength(1);
+    expect(v.value.players.find((p) => p.isHost)?.connected).toBe(true);
+  });
+
+  it("the migrated host can start a rematch; the old host's commands are rejected", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    // Host leaves in the lobby; P1 + P2 keep playing.
+    await leaveRoom(store, roomId, tokens[0], T0 + 100);
+    // Whoever is host now can run the lobby. Discover the connected host token.
+    const view = await getRoomView(store, roomId, tokens[1], T0 + 200);
+    if (!view.ok) return;
+    const myId = view.value.yourId;
+    const hostId = view.value.players.find((p) => p.isHost)?.id;
+    const hostToken = hostId === myId ? tokens[1] : tokens[2];
+    const otherToken = hostToken === tokens[1] ? tokens[2] : tokens[1];
+    // Old host (departed) cannot start.
+    const oldHostStart = await startGame(store, roomId, tokens[0], T0 + 250);
+    expect(oldHostStart.ok).toBe(false);
+    if (!oldHostStart.ok) expect(oldHostStart.error.code).toMatch(/not_a_player|not_host/);
+    // Both remaining ready up; the migrated host starts the next round.
+    await setReady(store, roomId, hostToken, true, T0 + 300);
+    await setReady(store, roomId, otherToken, true, T0 + 300);
+    const started = await startGame(store, roomId, hostToken, T0 + 400);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(started.value.phase).toBe("preparing");
+    expect(started.value.seekerId).toBeTruthy();
+  });
+
+  it("with only one player left, the host cannot start (waits for players)", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 2, T0);
+    await leaveRoom(store, roomId, tokens[0], T0 + 100); // host leaves → P1 sole host
+    const v = await getRoomView(store, roomId, tokens[1], T0 + 200);
+    if (!v.ok) return;
+    expect(v.value.players).toHaveLength(1);
+    expect(v.value.players[0].isHost).toBe(true);
+    await setReady(store, roomId, tokens[1], true, T0 + 250);
+    const started = await startGame(store, roomId, tokens[1], T0 + 300);
+    expect(started.ok).toBe(false);
+    if (!started.ok) expect(started.error.code).toBe("not_enough_players");
+  });
+
+  it("a non-participant poll never grants the host flag", async () => {
+    const store = freshStore();
+    const { roomId } = await roomWith(store, 2, T0);
+    const before = await getRoomView(store, roomId, null, T0 + 50);
+    const v = await getRoomView(store, roomId, "not-a-member-token", GONE);
+    if (!v.ok || !before.ok) return;
+    expect(v.value.yourId).toBeNull();
+    // Still exactly one host among the actual members (not the stranger).
+    expect(v.value.players.filter((p) => p.isHost)).toHaveLength(1);
+  });
+
+  it("a disconnected non-host player is pruned from the lobby", async () => {
+    const store = freshStore();
+    const { roomId, tokens } = await roomWith(store, 3, T0);
+    // Host keeps polling; P2 goes silent.
+    const v = await getRoomView(store, roomId, tokens[0], GONE);
+    if (!v.ok) return;
+    // Host is connected and stays host; the two silent players (P1, P2) are pruned.
+    expect(v.value.players.filter((p) => p.isHost)).toHaveLength(1);
+    expect(v.value.players.find((p) => p.isHost)?.id).toBe(v.value.yourId);
+    expect(v.value.players).toHaveLength(1);
   });
 });

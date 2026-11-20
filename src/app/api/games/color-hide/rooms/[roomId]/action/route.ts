@@ -1,4 +1,5 @@
 import {
+  leaveRoom,
   returnToLobby,
   selectMap,
   setNickname,
@@ -17,8 +18,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/games/color-hide/rooms/:roomId/action — lobby/round control.
- * Body: { action: "ready"|"nickname"|"map"|"start"|"lobby", ... }
- * Consolidated so the lobby has one endpoint instead of five tiny ones.
+ * Body: { action: "ready"|"nickname"|"map"|"start"|"lobby"|"leave", ... }
+ * Consolidated so the lobby has one endpoint instead of many tiny ones.
  */
 export async function POST(
   req: Request,
@@ -63,6 +64,9 @@ export async function POST(
         break;
       case "lobby":
         result = await returnToLobby(store, roomId, token);
+        break;
+      case "leave":
+        result = await leaveRoom(store, roomId, token);
         break;
       default:
         return errorResponse({ code: "invalid_request", message: "Unknown action." });

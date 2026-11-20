@@ -161,7 +161,8 @@ type ActionBody =
   | { action: "nickname"; nickname: string }
   | { action: "map"; mapId: MapId }
   | { action: "start" }
-  | { action: "lobby" };
+  | { action: "lobby" }
+  | { action: "leave" };
 
 function action(
   roomId: string,
@@ -184,6 +185,8 @@ export const apiStartGame = (roomId: string) =>
   action(roomId, { action: "start" });
 export const apiReturnToLobby = (roomId: string) =>
   action(roomId, { action: "lobby" });
+export const apiLeaveRoom = (roomId: string) =>
+  action(roomId, { action: "leave" });
 
 export function apiGetPaints(
   roomId: string,
